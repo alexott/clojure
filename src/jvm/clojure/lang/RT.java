@@ -1554,11 +1554,16 @@ static public ClassLoader makeClassLoader(){
 }
 
 static public ClassLoader baseLoader(){
+	ClassLoader cl = null;
 	if(Compiler.LOADER.isBound())
-		return (ClassLoader) Compiler.LOADER.deref();
+		cl = (ClassLoader) Compiler.LOADER.deref();
 	else if(booleanCast(USE_CONTEXT_CLASSLOADER.deref()))
-		return Thread.currentThread().getContextClassLoader();
-	return Compiler.class.getClassLoader();
+		cl = Thread.currentThread().getContextClassLoader();
+	else
+		cl = Compiler.class.getClassLoader();
+	if (cl == null)
+		cl = ClassLoader.getSystemClassLoader();
+	return cl;
 }
 
 static public Class classForName(String name) throws ClassNotFoundException{
