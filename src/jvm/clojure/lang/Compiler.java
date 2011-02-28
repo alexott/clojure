@@ -3221,7 +3221,7 @@ static class InvokeExpr implements Expr{
 			PersistentVector argvs = PersistentVector.EMPTY;
 			for(int i = 0; i < args.count(); i++)
 				argvs = argvs.cons(((Expr) args.nth(i)).eval());
-			return fn.applyTo(RT.seq(argvs));
+			return fn.applyTo(RT.seq( Util.ret1(argvs, argvs = null) ));
 			}
 		catch(Throwable e)
 			{
@@ -4571,8 +4571,8 @@ static public class ObjExpr implements Expr{
 
 	Type constantType(int id){
 		Object o = constants.nth(id);
-		Class c = o.getClass();
-		if(Modifier.isPublic(c.getModifiers()))
+		Class c = clojure.lang.Util.classOf(o);
+		if(c!= null && Modifier.isPublic(c.getModifiers()))
 			{
 			//can't emit derived fn types due to visibility
 			if(LazySeq.class.isAssignableFrom(c))

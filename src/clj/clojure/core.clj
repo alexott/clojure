@@ -5071,8 +5071,8 @@
 
 (defonce ^:dynamic
   ^{:private true
-     :doc "the set of paths currently being loaded by this thread"}
-  *pending-paths* #{})
+     :doc "A stack of paths currently being loaded by this thread"}
+  *pending-paths* ())
 
 (defonce ^:dynamic
   ^{:private true :doc
@@ -5206,8 +5206,20 @@
           (doseq [arg args]
             (apply load-lib prefix (prependss arg opts))))))))
 
-;; Public
+(defn- check-cyclic-dependency
+  "Detects and rejects non-trivial cyclic load dependencies. The
+  exception message shows the dependency chain with the cycle
+  highlighted. Ignores the trivial case of a file attempting to load
+  itself because that can occur when a gen-class'd class loads its
+  implementation."
+  [path]
+  (when (some #{path} (rest *pending-paths*))
+    (let [pending (map #(if (= % path) (str "[ " % " ]") %)
+                       (cons path *pending-paths*))
+          chain (apply str (interpose "->" pending))]
+      (throw (Exception. (str "Cyclic load dependency: " chain))))))
 
+;; Public
 
 (defn require
   "Loads libs, skipping any that are already loaded. Each argument is
@@ -5300,12 +5312,10 @@
       (when *loading-verbosely*
         (printf "(clojure.core/load \"%s\")\n" path)
         (flush))
-;      (throw-if (*pending-paths* path)
-;                "cannot load '%s' again while it is loading"
-;                path)
-      (when-not (*pending-paths* path)
+      (check-cyclic-dependency path)
+      (when-not (= path (first *pending-paths*))
         (binding [*pending-paths* (conj *pending-paths* path)]
-          (clojure.lang.RT/load  (.substring path 1)))))))
+          (clojure.lang.RT/load (.substring path 1)))))))
 
 (defn compile
   "Compiles the namespace named by the symbol lib into a set of
@@ -5908,31 +5918,32 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; clojure version number ;;;;;;;;;;;;;;;;;;;;;;
 
-(let [version-stream (.getResourceAsStream
-		      (clojure.lang.RT/baseLoader) 
-		      "clojure/version.properties")
-      properties     (doto (new java.util.Properties) (.load version-stream))
+(let [properties (with-open [version-stream (.getResourceAsStream
+                                             (clojure.lang.RT/baseLoader)
+                                             "clojure/version.properties")]
+                   (doto (new java.util.Properties)
+                     (.load version-stream)))
       version-string (.getProperty properties "version")
       [_ major minor incremental qualifier snapshot]
       (re-matches
        #"(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9_]+))?(?:-(SNAPSHOT))?"
        version-string)
       clojure-version {:major       (Integer/valueOf ^String major)
-		       :minor       (Integer/valueOf ^String minor)
-		       :incremental (Integer/valueOf ^String incremental)
-		       :qualifier   (if (= qualifier "SNAPSHOT") nil qualifier)}]
+                       :minor       (Integer/valueOf ^String minor)
+                       :incremental (Integer/valueOf ^String incremental)
+                       :qualifier   (if (= qualifier "SNAPSHOT") nil qualifier)}]
   (def ^:dynamic *clojure-version*
-       (if (.contains version-string "SNAPSHOT")
-	 (clojure.lang.RT/assoc clojure-version :interim true)
-	 clojure-version)))
-      
+    (if (.contains version-string "SNAPSHOT")
+      (clojure.lang.RT/assoc clojure-version :interim true)
+      clojure-version)))
+
 (add-doc-and-meta *clojure-version*
   "The version info for Clojure core, as a map containing :major :minor 
   :incremental and :qualifier keys. Feature releases may increment 
   :minor and/or :major, bugfix releases will increment :incremental. 
   Possible values of :qualifier include \"GA\", \"SNAPSHOT\", \"RC-x\" \"BETA-x\""
   {:added "1.0"})
-      
+
 (defn
   clojure-version 
   "Returns clojure version as a printable string."
@@ -5946,7 +5957,7 @@
        (when-let [q (:qualifier *clojure-version*)]
          (when (pos? (count q)) (str "-" q)))
        (when (:interim *clojure-version*)
-	 "-SNAPSHOT")))
+         "-SNAPSHOT")))
 
 (defn promise
   "Alpha - subject to change.
