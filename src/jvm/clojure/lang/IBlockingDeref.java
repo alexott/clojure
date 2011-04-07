@@ -8,8 +8,10 @@
  *   You must not remove this notice, or any other, from this software.
  **/
 
+/* rich 3/18/11 */
+
 package clojure.lang;
 
-public interface IPromiseImpl {
-    boolean hasValue();
+public interface IBlockingDeref{
+Object deref(long ms, Object timeoutValue) ;
 }
