@@ -619,7 +619,7 @@
   "Takes a body of expressions that returns an ISeq or nil, and yields
   a Seqable object that will invoke the body only the first time seq
   is called, and will cache the result and return it on all subsequent
-  seq calls."
+  seq calls. See also - realized?"
   {:added "1.0"}
   [& body]
   (list 'new 'clojure.lang.LazySeq (list* '^{:once true} fn* [] body)))    
@@ -682,7 +682,7 @@
   "Takes a body of expressions and yields a Delay object that will
   invoke the body only the first time it is forced (with force or deref/@), and
   will cache the result and return it on all subsequent force
-  calls."
+  calls. See also - realized?"
   {:added "1.0"}
   [& body]
     (list 'new 'clojure.lang.Delay (list* `^{:once true} fn* [] body)))
@@ -2003,15 +2003,20 @@
     r)))
 
 (defn deref
-  "Also reader macro: @ref/@agent/@var/@atom/@delay/@future. Within a transaction,
+  "Also reader macro: @ref/@agent/@var/@atom/@delay/@future/@promise. Within a transaction,
   returns the in-transaction-value of ref, else returns the
   most-recently-committed value of ref. When applied to a var, agent
   or atom, returns its current state. When applied to a delay, forces
   it if not already forced. When applied to a future, will block if
-  computation not complete"
+  computation not complete. When applied to a promise, will block
+  until a value is delivered.  The variant taking a timeout can be
+  used for blocking references (futures and promises), and will return
+  timeout-val if the timeout (in milliseconds) is reached before a
+  value is available. See also - realized?."
   {:added "1.0"
    :static true}
-  [^clojure.lang.IDeref ref] (.deref ref))
+  ([^clojure.lang.IDeref ref] (.deref ref))
+  ([^clojure.lang.IBlockingDeref ref timeout-ms timeout-val] (.deref ref timeout-ms timeout-val)))
 
 (defn atom
   "Creates and returns an Atom with an initial value of x and zero or
@@ -5838,7 +5843,8 @@
   "Takes a function of no args and yields a future object that will
   invoke the function in another thread, and will cache the result and
   return it on all subsequent calls to deref/@. If the computation has
-  not yet finished, calls to deref/@ will block."
+  not yet finished, calls to deref/@ will block, unless the variant
+  of deref with timeout is used. See also - realized?."
   {:added "1.1"
    :static true}
   [f]
@@ -5846,7 +5852,15 @@
         fut (.submit clojure.lang.Agent/soloExecutor ^Callable f)]
     (reify 
      clojure.lang.IDeref 
-      (deref [_] (.get fut))
+     (deref [_] (.get fut))
+     clojure.lang.IBlockingDeref
+     (deref
+      [_ timeout-ms timeout-val]
+      (try (.get fut timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
+           (catch java.util.concurrent.TimeoutException e
+             timeout-val)))
+     clojure.lang.IPending
+     (isRealized [_] (.isDone fut))
      java.util.concurrent.Future
       (get [_] (.get fut))
       (get [_ timeout unit] (.get fut timeout unit))
@@ -5858,7 +5872,8 @@
   "Takes a body of expressions and yields a future object that will
   invoke the body in another thread, and will cache the result and
   return it on all subsequent calls to deref/@. If the computation has
-  not yet finished, calls to deref/@ will block."
+  not yet finished, calls to deref/@ will block, unless the variant of
+  deref with timeout is used. See also - realized?."
   {:added "1.1"}
   [& body] `(future-call (^{:once true} fn* [] ~@body)))
 
@@ -5963,27 +5978,33 @@
   "Alpha - subject to change.
   Returns a promise object that can be read with deref/@, and set,
   once only, with deliver. Calls to deref/@ prior to delivery will
-  block. All subsequent derefs will return the same delivered value
-  without blocking."
+  block, unless the variant of deref with timeout is used. All
+  subsequent derefs will return the same delivered value without
+  blocking. See also - realized?."
   {:added "1.1"
    :static true}
   []
   (let [d (java.util.concurrent.CountDownLatch. 1)
-        v (atom nil)]
+        v (atom d)]
     (reify 
      clojure.lang.IDeref
-      (deref [_] (.await d) @v)
-     clojure.lang.IPromiseImpl
-      (hasValue [this]
-       (= 0 (.getCount d)))
+       (deref [_] (.await d) @v)
+     clojure.lang.IBlockingDeref
+       (deref
+        [_ timeout-ms timeout-val]
+        (if (.await d timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
+          @v
+          timeout-val))  
+     clojure.lang.IPending
+      (isRealized [this]
+       (zero? (.getCount d)))
      clojure.lang.IFn
-      (invoke [this x]
-        (locking d
-          (if (pos? (.getCount d))
-            (do (reset! v x)
-                (.countDown d)
-                this)
-            (throw (IllegalStateException. "Multiple deliver calls to a promise"))))))))
+     (invoke
+      [this x]
+      (when (and (pos? (.getCount d))
+                 (compare-and-set! v d x))
+        (.countDown d)
+        this)))))
 
 (defn deliver
   "Alpha - subject to change.
@@ -6182,6 +6203,86 @@
      ([a b c] (f (if (nil? a) x a) (if (nil? b) y b) (if (nil? c) z c)))
      ([a b c & ds] (apply f (if (nil? a) x a) (if (nil? b) y b) (if (nil? c) z c) ds)))))
 
+(defn every-pred
+  "Takes a set of predicates and returns a function f that returns true if all of its
+  composing predicates return a logical true value against all of its arguments, else it returns
+  false. Note that f is short-circuiting in that it will stop execution on the first
+  argument that triggers a logical false result against the original predicates."
+  {:added "1.3"}
+  ([p]
+     (fn ep1
+       ([] true)
+       ([x] (boolean (p x)))
+       ([x y] (boolean (and (p x) (p y))))
+       ([x y z] (boolean (and (p x) (p y) (p z))))
+       ([x y z & args] (boolean (and (ep1 x y z)
+                                     (every? p args))))))
+  ([p1 p2]
+     (fn ep2
+       ([] true)
+       ([x] (boolean (and (p1 x) (p2 x))))
+       ([x y] (boolean (and (p1 x) (p1 y) (p2 x) (p2 y))))
+       ([x y z] (boolean (and (p1 x) (p1 y) (p1 z) (p2 x) (p2 y) (p2 z))))
+       ([x y z & args] (boolean (and (ep2 x y z)
+                                     (every? #(and (p1 %) (p2 %)) args))))))
+  ([p1 p2 p3]
+     (fn ep3
+       ([] true)
+       ([x] (boolean (and (p1 x) (p2 x) (p3 x))))
+       ([x y] (boolean (and (p1 x) (p2 x) (p3 x) (p1 y) (p2 y) (p3 y))))
+       ([x y z] (boolean (and (p1 x) (p2 x) (p3 x) (p1 y) (p2 y) (p3 y) (p1 z) (p2 z) (p3 z))))
+       ([x y z & args] (boolean (and (ep3 x y z)
+                                     (every? #(and (p1 %) (p2 %) (p3 %)) args))))))
+  ([p1 p2 p3 & ps]
+     (let [ps (list* p1 p2 p3 ps)]
+       (fn epn
+         ([] true)
+         ([x] (every? #(% x) ps))
+         ([x y] (every? #(and (% x) (% y)) ps))
+         ([x y z] (every? #(and (% x) (% y) (% z)) ps))
+         ([x y z & args] (boolean (and (epn x y z)
+                                       (every? #(every? % args) ps))))))))
+
+(defn some-fn
+  "Takes a set of predicates and returns a function f that returns the first logical true value
+  returned by one of its composing predicates against any of its arguments, else it returns
+  logical false. Note that f is short-circuiting in that it will stop execution on the first
+  argument that triggers a logical true result against the original predicates."
+  {:added "1.3"}
+  ([p]
+     (fn sp1
+       ([] nil)
+       ([x] (p x))
+       ([x y] (or (p x) (p y)))
+       ([x y z] (or (p x) (p y) (p z)))
+       ([x y z & args] (or (sp1 x y z)
+                           (some p args)))))
+  ([p1 p2]
+     (fn sp2
+       ([] nil)
+       ([x] (or (p1 x) (p2 x)))
+       ([x y] (or (p1 x) (p1 y) (p2 x) (p2 y)))
+       ([x y z] (or (p1 x) (p1 y) (p1 z) (p2 x) (p2 y) (p2 z)))
+       ([x y z & args] (or (sp2 x y z)
+                           (some #(or (p1 %) (p2 %)) args)))))
+  ([p1 p2 p3]
+     (fn sp3
+       ([] nil)
+       ([x] (or (p1 x) (p2 x) (p3 x)))
+       ([x y] (or (p1 x) (p2 x) (p3 x) (p1 y) (p2 y) (p3 y)))
+       ([x y z] (or (p1 x) (p2 x) (p3 x) (p1 y) (p2 y) (p3 y) (p1 z) (p2 z) (p3 z)))
+       ([x y z & args] (or (sp3 x y z)
+                           (some #(or (p1 %) (p2 %) (p3 %)) args)))))
+  ([p1 p2 p3 & ps]
+     (let [ps (list* p1 p2 p3 ps)]
+       (fn spn
+         ([] nil)
+         ([x] (some #(% x) ps))
+         ([x y] (some #(or (% x) (% y)) ps))
+         ([x y z] (some #(or (% x) (% y) (% z)) ps))
+         ([x y z & args] (or (spn x y z)
+                             (some #(some % args) ps)))))))
+
 (defn- ^{:dynamic true} assert-valid-fdecl
   "A good fdecl looks like (([a] ...) ([a b] ...)) near the end of defn."
   [fdecl]
@@ -6222,3 +6323,8 @@
   `(with-redefs-fn ~(zipmap (map #(list `var %) (take-nth 2 bindings))
                             (take-nth 2 (next bindings)))
                     (fn [] ~@body)))
+
+(defn realized?
+  "Returns true if a value has been produced for a promise, delay, future or lazy sequence."
+  {:added "1.3"}
+  [^clojure.lang.IPending x] (.isRealized x))

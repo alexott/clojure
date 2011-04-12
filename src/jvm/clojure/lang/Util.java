@@ -12,6 +12,7 @@
 
 package clojure.lang;
 
+import java.lang.ref.Reference;
 import java.math.BigInteger;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -124,17 +125,31 @@ static public ISeq ret1(ISeq ret, Object nil){
 		return ret;
 }
 
-static public <K,V> void clearCache(ReferenceQueue rq, ConcurrentHashMap<K, SoftReference<V>> cache){
+static public <K,V> void clearCache(ReferenceQueue rq, ConcurrentHashMap<K, Reference<V>> cache){
 		//cleanup any dead entries
 	if(rq.poll() != null)
 		{
 		while(rq.poll() != null)
 			;
-		for(Map.Entry<K, SoftReference<V>> e : cache.entrySet())
+		for(Map.Entry<K, Reference<V>> e : cache.entrySet())
 			{
 			if(e.getValue().get() == null)
 				cache.remove(e.getKey(), e.getValue());
 			}
 		}
 }
+
+static public RuntimeException runtimeException(String s){
+	return new RuntimeException(s);
+}
+static public RuntimeException runtimeException(String s, Throwable e){
+	return new RuntimeException(s, e);
+}
+
+static public RuntimeException runtimeException(Throwable e){
+	if(e instanceof RuntimeException)
+		return (RuntimeException)e;
+	return new RuntimeException(e);
+}
+
 }

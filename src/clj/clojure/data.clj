@@ -35,7 +35,7 @@
   [a b ks]
   (reduce
    (fn [diff1 diff2]
-     (map merge diff1 diff2))
+     (doall (map merge diff1 diff2)))
    [nil nil nil]
    (map
     (fn [k] (map #(when % {k %}) (diff (get a k) (get b k))))
@@ -106,6 +106,7 @@
   [things-only-in-a things-only-in-b things-in-both].
   Comparison rules:
 
+  * For equal a and b, return [nil nil a].
   * Maps are subdiffed where keys match and values differ.
   * Sets are never subdiffed.
   * All sequential things are treated as associative collections
@@ -114,7 +115,9 @@
     an atom and compared for equality."
   {:added "1.3"}
   [a b]
-  (if (= (equality-partition a) (equality-partition b))
-    (diff-similar a b)
-    (atom-diff a b)))
+  (if (= a b)
+    [nil nil a]
+    (if (= (equality-partition a) (equality-partition b))
+      (diff-similar a b)
+      (atom-diff a b))))
   

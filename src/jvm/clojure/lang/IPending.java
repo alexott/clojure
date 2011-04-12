@@ -8,16 +8,8 @@
  *   You must not remove this notice, or any other, from this software.
  **/
 
-/* rich May 24, 2009 */
-
 package clojure.lang;
 
-public interface IChunkedSeq extends ISeq, Sequential {
-
-IChunk chunkedFirst() ;
-
-ISeq chunkedNext() ;
-
-ISeq chunkedMore() ;
-
+public interface IPending{
+    boolean isRealized();
 }
