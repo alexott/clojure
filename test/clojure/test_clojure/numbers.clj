@@ -106,7 +106,7 @@
    [unchecked-short  [-1            0           1           Byte/MAX_VALUE  Short/MAX_VALUE  -1                 -1                     -1                 -1]] 
    [int              [-1            0           1           Byte/MAX_VALUE  Short/MAX_VALUE  Integer/MAX_VALUE  :error                 :error             :error]]
    [unchecked-int    [-1            0           1           Byte/MAX_VALUE  Short/MAX_VALUE  Integer/MAX_VALUE  -1                     Integer/MAX_VALUE  Integer/MAX_VALUE]]
-   [long             [-1            0           1           Byte/MAX_VALUE  Short/MAX_VALUE  Integer/MAX_VALUE  Long/MAX_VALUE         Long/MAX_VALUE     Long/MAX_VALUE]]
+   [long             [-1            0           1           Byte/MAX_VALUE  Short/MAX_VALUE  Integer/MAX_VALUE  Long/MAX_VALUE         :error             :error]]
    [unchecked-long   [-1            0           1           Byte/MAX_VALUE  Short/MAX_VALUE  Integer/MAX_VALUE  Long/MAX_VALUE         Long/MAX_VALUE     Long/MAX_VALUE]]
                                                                                              ;; 2.14748365E9 if when float/double conversion is avoided...
    [float            [-1.0          0.0         1.0         127.0           32767.0          2.147483648E9      9.223372036854776E18   Float/MAX_VALUE    :error]]
@@ -285,6 +285,9 @@
     ; num = 0, div != 0
     (mod 0 3) 0       ; (0 / 3) * 3 + (0 mod 3) = 0 * 3 + 0 = 0
     (mod 0 -3) 0
+
+    ; large args
+    (mod 3216478362187432 432143214) 120355456
   )
 )
 
@@ -418,8 +421,8 @@
     (even? 0)
     (not (even? 5))
     (even? 8))
-  (is (thrown? ArithmeticException (even? 1/2)))
-  (is (thrown? ArithmeticException (even? (double 10)))))
+  (is (thrown? IllegalArgumentException (even? 1/2)))
+  (is (thrown? IllegalArgumentException (even? (double 10)))))
 
 (deftest test-odd?
   (are [x] (true? x)
@@ -428,8 +431,8 @@
     (not (odd? 0))
     (odd? 5)
     (not (odd? 8)))
-  (is (thrown? ArithmeticException (odd? 1/2)))
-  (is (thrown? ArithmeticException (odd? (double 10)))))
+  (is (thrown? IllegalArgumentException (odd? 1/2)))
+  (is (thrown? IllegalArgumentException (odd? (double 10)))))
 
 (defn- expt
   "clojure.contrib.math/expt is a better and much faster impl, but this works.
@@ -443,10 +446,11 @@ Math/pow overflows to Infinity."
        2r1000 (bit-shift-left 2r1 3)
        2r00101110 (bit-shift-left 2r00010111 1)
        2r00101110 (apply bit-shift-left [2r00010111 1])
-       2r01 (bit-shift-left 2r10 -1)
+       0 (bit-shift-left 2r10 -1) ; truncated to least 6-bits, 63
        (expt 2 32) (bit-shift-left 1 32)
-       (expt 2N 10000) (bit-shift-left 1N 10000)
-       ))
+       (expt 2 16) (bit-shift-left 1 10000) ; truncated to least 6-bits, 16
+       )
+  (is (thrown? IllegalArgumentException (bit-shift-left 1N 1))))
 
 (deftest test-bit-shift-right
   (are [x y] (= x y)
@@ -456,11 +460,27 @@ Math/pow overflows to Infinity."
        2r000 (bit-shift-right 2r100 3)
        2r0001011 (bit-shift-right 2r00010111 1)
        2r0001011 (apply bit-shift-right [2r00010111 1])
-       2r100 (bit-shift-right 2r10 -1)
+       0 (bit-shift-right 2r10 -1) ; truncated to least 6-bits, 63
        1 (bit-shift-right (expt 2 32) 32)
-       1N (bit-shift-right (expt 2N 10000) 10000)
-       ))
+       1 (bit-shift-right (expt 2 16) 10000) ; truncated to least 6-bits, 16
+       )
+  (is (thrown? IllegalArgumentException (bit-shift-right 1N 1))))
 
+(deftest test-bit-clear
+  (is (= 2r1101 (bit-clear 2r1111 1)))
+  (is (= 2r1101 (bit-clear 2r1101 1))))
+
+(deftest test-bit-set
+  (is (= 2r1111 (bit-set 2r1111 1)))
+  (is (= 2r1111 (bit-set 2r1101 1))))
+
+(deftest test-bit-flip
+  (is (= 2r1101 (bit-flip 2r1111 1)))
+  (is (= 2r1111 (bit-flip 2r1101 1))))
+
+(deftest test-bit-test
+  (is (true? (bit-test 2r1111 1)))
+  (is (false? (bit-test 2r1101 1))))
 
 ;; arrays
 (deftest test-array-types

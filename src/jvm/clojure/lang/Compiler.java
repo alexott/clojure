@@ -15,8 +15,15 @@ package clojure.lang;
 //*
 
 import clojure.asm.*;
-import clojure.asm.commons.Method;
 import clojure.asm.commons.GeneratorAdapter;
+import clojure.asm.commons.Method;
+
+import java.io.*;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Modifier;
+import java.util.*;
+import java.util.regex.Pattern;
+
 //*/
 /*
 
@@ -26,13 +33,6 @@ import org.objectweb.asm.commons.GeneratorAdapter;
 import org.objectweb.asm.util.TraceClassVisitor;
 import org.objectweb.asm.util.CheckClassAdapter;
 //*/
-
-import java.io.*;
-import java.lang.reflect.InvocationTargetException;
-import java.util.*;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Modifier;
-import java.util.regex.Pattern;
 
 public class Compiler implements Opcodes{
 
@@ -461,13 +461,12 @@ static class DefExpr implements Expr{
 				}
 			IPersistentMap mm = sym.meta();
 			boolean isDynamic = RT.booleanCast(RT.get(mm,dynamicKey));
-			if(!isDynamic && sym.name.startsWith("*") && sym.name.endsWith("*") && sym.name.length() > 1)
-				{
-				RT.errPrintWriter().format("Var %s not marked :dynamic true, setting to :dynamic. You should fix this before next release!\n",
-				                           sym);
-				isDynamic = true;
-				mm = (IPersistentMap) RT.assoc(mm,dynamicKey, RT.T);
-				}
+            if(!isDynamic && sym.name.startsWith("*") && sym.name.endsWith("*") && sym.name.length() > 1)
+                {
+                RT.errPrintWriter().format("Warning: %1$s not declared dynamic and thus is not dynamically rebindable, "
+                                          +"but its name suggests otherwise. Please either indicate ^:dynamic %1$s or change the name.\n",
+                                           sym);
+                }
 			if(RT.booleanCast(RT.get(mm, arglistsKey)))
 				{
 				IPersistentMap vm = v.meta();
@@ -775,8 +774,10 @@ static public abstract class HostExpr implements Expr, MaybePrimitiveExpr{
 						}
 					else if(returnType == float.class)
 						{
-						gen.visitInsn(F2D);
-						gen.invokeStatic(DOUBLE_TYPE, doubleValueOfMethod);
+						gen.invokeStatic(FLOAT_TYPE, floatValueOfMethod);
+
+//						gen.visitInsn(F2D);
+//						gen.invokeStatic(DOUBLE_TYPE, doubleValueOfMethod);
 						}
 					else if(returnType == double.class)
 							gen.invokeStatic(DOUBLE_TYPE, doubleValueOfMethod);
@@ -1213,6 +1214,31 @@ static Class maybePrimitiveType(Expr e){
 	return null;
 }
 
+static Class maybeJavaClass(Collection<Expr> exprs){
+    Class match = null;
+    try
+    {
+    for (Expr e : exprs)
+        {
+        if (e instanceof ThrowExpr)
+            continue;
+        if (!e.hasJavaClass())
+            return null;
+        Class c = e.getJavaClass();
+        if (match == null)
+            match = c;
+        else if (match != c)
+            return null;
+        }
+    }
+    catch(Exception e)
+    {
+        return null;
+    }
+    return match;
+}
+
+
 static abstract class MethodExpr extends HostExpr{
 	static void emitArgsAsArray(IPersistentVector args, ObjExpr objx, GeneratorAdapter gen){
 		gen.push(args.count());
@@ -1519,6 +1545,29 @@ static class StaticMethodExpr extends MethodExpr{
 		return method != null && Util.isPrimitive(method.getReturnType());
 	}
 
+	public boolean canEmitIntrinsicPredicate(){
+		return method != null && RT.get(Intrinsics.preds, method.toString()) != null;
+	}
+
+	public void emitIntrinsicPredicate(C context, ObjExpr objx, GeneratorAdapter gen, Label falseLabel){
+		gen.visitLineNumber(line, gen.mark());
+		if(method != null)
+			{
+			MethodExpr.emitTypedArgs(objx, gen, method.getParameterTypes(), args);
+			if(context == C.RETURN)
+				{
+				ObjMethod method = (ObjMethod) METHOD.deref();
+				method.emitClearLocals(gen);
+				}
+			Object[] predOps = (Object[]) RT.get(Intrinsics.preds, method.toString());
+			for(int i=0;i<predOps.length-1;i++)
+				gen.visitInsn((Integer)predOps[i]);
+			gen.visitJumpInsn((Integer)predOps[predOps.length-1],falseLabel);
+			}
+		else
+			throw new UnsupportedOperationException("Unboxed emit of unknown member");
+	}
+
 	public void emitUnboxed(C context, ObjExpr objx, GeneratorAdapter gen){
 		gen.visitLineNumber(line, gen.mark());
 		if(method != null)
@@ -1530,9 +1579,23 @@ static class StaticMethodExpr extends MethodExpr{
 				ObjMethod method = (ObjMethod) METHOD.deref();
 				method.emitClearLocals(gen);
 				}
-			Type type = Type.getType(c);
-			Method m = new Method(methodName, Type.getReturnType(method), Type.getArgumentTypes(method));
-			gen.invokeStatic(type, m);
+			Object ops = RT.get(Intrinsics.ops, method.toString());
+			if(ops != null)
+				{
+				if(ops instanceof Object[])
+					{
+					for(Object op : (Object[])ops)
+						gen.visitInsn((Integer) op);
+					}
+				else
+					gen.visitInsn((Integer) ops);
+				}
+			else
+				{
+				Type type = Type.getType(c);
+				Method m = new Method(methodName, Type.getReturnType(method), Type.getArgumentTypes(method));
+				gen.invokeStatic(type, m);
+				}
 			}
 		else
 			throw new UnsupportedOperationException("Unboxed emit of unknown member");
@@ -1697,6 +1760,7 @@ static class ConstantExpr extends LiteralExpr{
 
 	public void emit(C context, ObjExpr objx, GeneratorAdapter gen){
 		objx.emitConstant(gen, id);
+
 		if(context == C.STATEMENT)
 			{
 			gen.pop();
@@ -1725,17 +1789,16 @@ static class ConstantExpr extends LiteralExpr{
 
 			if(v == null)
 				return NIL_EXPR;
-//			Class fclass = v.getClass();
-//			if(fclass == Keyword.class)
-//				return registerKeyword((Keyword) v);
-//			else if(v instanceof Num)
-//				return new NumExpr((Num) v);
-//			else if(fclass == String.class)
-//				return new StringExpr((String) v);
-//			else if(fclass == Character.class)
-//				return new CharExpr((Character) v);
-//			else if(v instanceof IPersistentCollection && ((IPersistentCollection) v).count() == 0)
-//				return new EmptyExpr(v);
+			else if(v == Boolean.TRUE)
+				return TRUE_EXPR;
+			else if(v == Boolean.FALSE)
+				return FALSE_EXPR;
+			if(v instanceof Number)
+				return NumberExpr.parse((Number)v);
+			else if(v instanceof String)
+				return new StringExpr((String) v);
+			else if(v instanceof IPersistentCollection && ((IPersistentCollection) v).count() == 0)
+				return new EmptyExpr(v);
 			else
 				return new ConstantExpr(v);
 		}
@@ -2224,6 +2287,7 @@ static int getMatchingParams(String methodName, ArrayList<Class[]> paramlists, I
             {
             if(!foundExact || matchIdx == -1 || rets.get(matchIdx).isAssignableFrom(rets.get(i)))
                 matchIdx = i;
+            tied = false;
             foundExact = true;
             }
 		else if(match && !foundExact)
@@ -2448,7 +2512,11 @@ public static class IfExpr implements Expr, MaybePrimitiveExpr{
 
 		try
 			{
-			if(maybePrimitiveType(testExpr) == boolean.class)
+			if(testExpr instanceof StaticMethodExpr && ((StaticMethodExpr)testExpr).canEmitIntrinsicPredicate())
+				{
+				((StaticMethodExpr) testExpr).emitIntrinsicPredicate(C.EXPRESSION, objx, gen, falseLabel);
+				}
+			else if(maybePrimitiveType(testExpr) == boolean.class)
 				{
 				((MaybePrimitiveExpr) testExpr).emitUnboxed(C.EXPRESSION, objx, gen);
 				gen.ifZCmp(gen.EQ, falseLabel);
@@ -3238,7 +3306,25 @@ static class InvokeExpr implements Expr{
 					}
 				}
 			}
-		this.tag = tag != null ? tag : (fexpr instanceof VarExpr ? ((VarExpr) fexpr).tag : null);
+		
+		if (tag != null) {
+		    this.tag = tag;
+		} else if (fexpr instanceof VarExpr) {
+		    Object arglists = RT.get(RT.meta(((VarExpr) fexpr).var), arglistsKey);
+		    Object sigTag = null;
+		    for(ISeq s = RT.seq(arglists); s != null; s = s.next()) {
+                APersistentVector sig = (APersistentVector) s.first();
+                int restOffset = sig.indexOf(_AMP_);
+                if (args.count() == sig.count() || (restOffset > -1 && args.count() >= restOffset)) {
+                    sigTag = tagOf(sig);
+                    break;
+                }
+            }
+		    
+		    this.tag = sigTag == null ? ((VarExpr) fexpr).tag : sigTag;
+		} else {
+		    this.tag = null;
+		}
 	}
 
 	public Object eval() {
@@ -3633,18 +3719,18 @@ static public class FnExpr extends ObjExpr{
 	}
 
 	public void emitForDefn(ObjExpr objx, GeneratorAdapter gen){
-		if(!hasPrimSigs && closes.count() == 0)
-			{
-			Type thunkType = Type.getType(FnLoaderThunk.class);
-			//presumes var on stack
-			gen.dup();
-			gen.newInstance(thunkType);
-			gen.dupX1();
-			gen.swap();
-			gen.push(internalName.replace('/','.'));
-			gen.invokeConstructor(thunkType,Method.getMethod("void <init>(clojure.lang.Var,String)"));
-			}
-		else
+//		if(!hasPrimSigs && closes.count() == 0)
+//			{
+//			Type thunkType = Type.getType(FnLoaderThunk.class);
+////			presumes var on stack
+//			gen.dup();
+//			gen.newInstance(thunkType);
+//			gen.dupX1();
+//			gen.swap();
+//			gen.push(internalName.replace('/','.'));
+//			gen.invokeConstructor(thunkType,Method.getMethod("void <init>(clojure.lang.Var,String)"));
+//			}
+//		else
 			emit(C.EXPRESSION,objx,gen);
 	}
 }
@@ -3666,6 +3752,9 @@ static public class ObjExpr implements Expr{
 
 	//symbol->lb
 	IPersistentMap fields = null;
+
+	//hinted fields
+	IPersistentVector hintedFields = PersistentVector.EMPTY;
 
 	//Keyword->KeywordExpr
 	IPersistentMap keywords = PersistentHashMap.EMPTY;
@@ -4027,7 +4116,7 @@ static public class ObjExpr implements Expr{
 
 		if(supportsMeta())
 			{
-					//ctor that takes closed-overs but not meta
+			//ctor that takes closed-overs but not meta
 			Type[] ctorTypes = ctorTypes();
 			Type[] noMetaCtorTypes = new Type[ctorTypes.length-1];
 			for(int i=1;i<ctorTypes.length;i++)
@@ -4094,7 +4183,8 @@ static public class ObjExpr implements Expr{
 			gen.returnValue();
 			gen.endMethod();
 			}
-		
+
+		emitStatics(cv);
 		emitMethods(cv);
 
 		if(keywordCallsites.count() > 0)
@@ -4155,6 +4245,9 @@ static public class ObjExpr implements Expr{
 			clinitgen.putStatic(objtype, siteNameStatic(i), KEYWORD_LOOKUPSITE_TYPE);
 			clinitgen.putStatic(objtype, thunkNameStatic(i), ILOOKUP_THUNK_TYPE);
 			}
+	}
+
+	protected void emitStatics(ClassVisitor gen){
 	}
 
 	protected void emitMethods(ClassVisitor gen){
@@ -4260,6 +4353,36 @@ static public class ObjExpr implements Expr{
 			gen.push(var.ns.name.toString());
 			gen.push(var.sym.toString());
 			gen.invokeStatic(RT_TYPE, Method.getMethod("clojure.lang.Var var(String,String)"));
+			}
+		else if(value instanceof IType)
+			{
+			Method ctor = new Method("<init>", Type.getConstructorDescriptor(value.getClass().getConstructors()[0]));
+			gen.newInstance(Type.getType(value.getClass()));
+			gen.dup();
+			IPersistentVector fields = (IPersistentVector) Reflector.invokeStaticMethod(value.getClass(), "getBasis", new Object[]{});
+			for(ISeq s = RT.seq(fields); s != null; s = s.next())
+				{
+				Symbol field = (Symbol) s.first();
+				Class k = tagClass(tagOf(field));
+				Object val = Reflector.getInstanceField(value, field.name);
+				emitValue(val, gen);
+
+				if(k.isPrimitive())
+					{
+					Type b = Type.getType(boxClass(k));
+					String p = Type.getType(k).getDescriptor();
+					String n = k.getName();
+
+					gen.invokeVirtual(b, new Method(n+"Value", "()"+p));
+					}
+				}
+			gen.invokeConstructor(Type.getType(value.getClass()), ctor);
+			}
+		else if(value instanceof IRecord)
+			{
+			Method createMethod = Method.getMethod(value.getClass().getName() + " create(clojure.lang.IPersistentMap)");
+            emitValue(PersistentArrayMap.create((java.util.Map) value), gen);
+			gen.invokeStatic(getType(value.getClass()), createMethod);
 			}
 		else if(value instanceof IPersistentMap)
 			{
@@ -5681,9 +5804,13 @@ public static class LetExpr implements Expr, MaybePrimitiveExpr{
 			ObjMethod method = (ObjMethod) METHOD.deref();
 			IPersistentMap backupMethodLocals = method.locals;
 			IPersistentMap backupMethodIndexLocals = method.indexlocals;
-			PersistentVector recurMismatches = null;
+			IPersistentVector recurMismatches = PersistentVector.EMPTY;
+			for (int i = 0; i < bindings.count()/2; i++)
+				{
+				recurMismatches = recurMismatches.cons(RT.F);
+				}
 
-			//we might repeat once if a loop with a recurMistmatch, return breaks
+			//may repeat once for each binding with a mismatch, return breaks
 			while(true){
 				IPersistentMap dynamicBindings = RT.map(LOCAL_ENV, LOCAL_ENV.deref(),
 														NEXT_LOCAL_NUM, NEXT_LOCAL_NUM.deref());
@@ -5710,7 +5837,7 @@ public static class LetExpr implements Expr, MaybePrimitiveExpr{
 						Expr init = analyze(C.EXPRESSION, bindings.nth(i + 1), sym.name);
 						if(isLoop)
 							{
-							if(recurMismatches != null && ((LocalBinding)recurMismatches.nth(i/2)).recurMistmatch)
+							if(recurMismatches != null && RT.booleanCast(recurMismatches.nth(i/2)))
 								{
 								init = new StaticMethodExpr("", 0, null, RT.class, "box", RT.vector(init));
 								if(RT.booleanCast(RT.WARN_ON_REFLECTION.deref()))
@@ -5732,6 +5859,7 @@ public static class LetExpr implements Expr, MaybePrimitiveExpr{
 					if(isLoop)
 						LOOP_LOCALS.set(loopLocals);
 					Expr bodyExpr;
+					boolean moreMismatches = false;
 					try {
 						if(isLoop)
 							{
@@ -5748,16 +5876,18 @@ public static class LetExpr implements Expr, MaybePrimitiveExpr{
 						if(isLoop)
 							{
 						    Var.popThreadBindings();
-							recurMismatches = null;
 							for(int i = 0;i< loopLocals.count();i++)
 								{
 								LocalBinding lb = (LocalBinding) loopLocals.nth(i);
 								if(lb.recurMistmatch)
-									recurMismatches = loopLocals;
+									{
+									recurMismatches = (IPersistentVector)recurMismatches.assoc(i, RT.T);
+									moreMismatches = true;
+									}
 								}
 							}
 						}
-					if(recurMismatches == null)
+					if(!moreMismatches)
 						return new LetExpr(bindingInits, bodyExpr, isLoop);
 					}
 				finally
@@ -6086,6 +6216,10 @@ private static Expr analyze(C context, Object form, String name) {
 				return analyzeSeq(context, (ISeq) form, name);
 		else if(form instanceof IPersistentVector)
 				return VectorExpr.parse(context, (IPersistentVector) form);
+		else if(form instanceof IRecord)
+				return new ConstantExpr(form);
+		else if(form instanceof IType)
+				return new ConstantExpr(form);
 		else if(form instanceof IPersistentMap)
 				return MapExpr.parse(context, (IPersistentMap) form);
 		else if(form instanceof IPersistentSet)
@@ -6320,12 +6454,13 @@ public static Object eval(Object form, boolean freshLoader) {
 					eval(RT.first(s), false);
 				return eval(RT.first(s), false);
 				}
-			else if(form instanceof IPersistentCollection
-			        && !(RT.first(form) instanceof Symbol
-			             && ((Symbol) RT.first(form)).name.startsWith("def")))
+			else if((form instanceof IType) ||
+					(form instanceof IPersistentCollection
+					&& !(RT.first(form) instanceof Symbol
+						&& ((Symbol) RT.first(form)).name.startsWith("def"))))
 				{
 				ObjExpr fexpr = (ObjExpr) analyze(C.EXPRESSION, RT.list(FN, PersistentVector.EMPTY, form),
-				                                  "eval" + RT.nextID());
+													"eval" + RT.nextID());
 				IFn fn = (IFn) fexpr.eval();
 				return fn.invoke();
 				}
@@ -6493,6 +6628,8 @@ private static Expr analyzeSymbol(Symbol sym) {
 		Var v = (Var) o;
 		if(isMacro(v) != null)
 			throw Util.runtimeException("Can't take value of a macro: " + v);
+		if(RT.booleanCast(RT.get(v.meta(),RT.CONST_KEY)))
+			return analyze(C.EXPRESSION, RT.list(QUOTE, v.get()));
 		registerVar(v);
 		return new VarExpr(v, tag);
 		}
@@ -7147,6 +7284,8 @@ static public class NewInstanceExpr extends ObjExpr{
 				                              LOCAL_ENV, ret.fields
 						, COMPILE_STUB_SYM, Symbol.intern(null, tagName)
 						, COMPILE_STUB_CLASS, stub));
+
+				ret.hintedFields = RT.subvec(fieldSyms, 0, fieldSyms.count() - ret.altCtorDrops);
 				}
 
 			//now (methodname [args] body)*
@@ -7275,6 +7414,82 @@ static public class NewInstanceExpr extends ObjExpr{
 		return c.getName().replace('.', '/');
 	}
 
+	protected void emitStatics(ClassVisitor cv) {
+		if(this.isDeftype())
+			{
+			//getBasis()
+			Method meth = Method.getMethod("clojure.lang.IPersistentVector getBasis()");
+			GeneratorAdapter gen = new GeneratorAdapter(ACC_PUBLIC + ACC_STATIC,
+												meth,
+												null,
+												null,
+												cv);
+			emitValue(hintedFields, gen);
+			gen.returnValue();
+			gen.endMethod();
+
+			if (this.isDeftype() && this.fields.count() > this.hintedFields.count())
+				{
+				//create(IPersistentMap)
+				String className = name.replace('.', '/');
+				int i = 1;
+				int fieldCount = hintedFields.count();
+
+				MethodVisitor mv = cv.visitMethod(ACC_PUBLIC + ACC_STATIC, "create", "(Lclojure/lang/IPersistentMap;)L"+className+";", null, null);
+				mv.visitCode();
+
+				for(ISeq s = RT.seq(hintedFields); s!=null; s=s.next(), i++)
+					{
+					String bName = ((Symbol)s.first()).name;
+					Class k = tagClass(tagOf(s.first()));
+
+					mv.visitVarInsn(ALOAD, 0);
+					mv.visitLdcInsn(bName);
+					mv.visitMethodInsn(INVOKESTATIC, "clojure/lang/Keyword", "intern", "(Ljava/lang/String;)Lclojure/lang/Keyword;");
+					mv.visitInsn(ACONST_NULL);
+					mv.visitMethodInsn(INVOKEINTERFACE, "clojure/lang/IPersistentMap", "valAt", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+					if(k.isPrimitive())
+						{
+						mv.visitTypeInsn(CHECKCAST, Type.getType(boxClass(k)).getInternalName());
+						}
+					mv.visitVarInsn(ASTORE, i);
+					mv.visitVarInsn(ALOAD, 0);
+					mv.visitLdcInsn(bName);
+					mv.visitMethodInsn(INVOKESTATIC, "clojure/lang/Keyword", "intern", "(Ljava/lang/String;)Lclojure/lang/Keyword;");
+					mv.visitMethodInsn(INVOKEINTERFACE, "clojure/lang/IPersistentMap", "without", "(Ljava/lang/Object;)Lclojure/lang/IPersistentMap;");
+					mv.visitVarInsn(ASTORE, 0);
+					}
+
+				mv.visitTypeInsn(Opcodes.NEW, className);
+				mv.visitInsn(DUP);
+
+				Method ctor = new Method("<init>", Type.VOID_TYPE, ctorTypes());
+
+				if(hintedFields.count() > 0)
+					for(i=1; i<=fieldCount; i++)
+						{
+						mv.visitVarInsn(ALOAD, i);
+						Class k = tagClass(tagOf(hintedFields.nth(i-1)));
+						if(k.isPrimitive())
+							{
+							String b = Type.getType(boxClass(k)).getInternalName();
+							String p = Type.getType(k).getDescriptor();
+							String n = k.getName();
+
+							mv.visitMethodInsn(INVOKEVIRTUAL, b, n+"Value", "()"+p);
+							}
+						}
+
+				mv.visitInsn(ACONST_NULL);
+				mv.visitVarInsn(ALOAD, 0);
+				mv.visitMethodInsn(INVOKESTATIC, "clojure/lang/RT", "seqOrElse", "(Ljava/lang/Object;)Ljava/lang/Object;");
+				mv.visitMethodInsn(INVOKESPECIAL, className, "<init>", ctor.getDescriptor());
+				mv.visitInsn(ARETURN);
+				mv.visitMaxs(4+fieldCount, 1+fieldCount);
+				mv.visitEnd();
+				}
+			}
+	}
 
 	protected void emitMethods(ClassVisitor cv){
 		for(ISeq s = RT.seq(methods); s != null; s = s.next())
@@ -7668,6 +7883,32 @@ public static class NewInstanceMethod extends ObjMethod{
 		return c.isPrimitive()?c:Object.class;
 	}
 
+	static Class boxClass(Class p) {
+		if(!p.isPrimitive())
+			return p;
+
+		Class c = null;
+
+		if(p == Integer.TYPE)
+			c = Integer.class;
+		else if(p == Long.TYPE)
+			c = Long.class;
+		else if(p == Float.TYPE)
+			c = Float.class;
+		else if(p == Double.TYPE)
+			c = Double.class;
+		else if(p == Character.TYPE)
+			c = Character.class;
+		else if(p == Short.TYPE)
+			c = Short.class;
+		else if(p == Byte.TYPE)
+			c = Byte.class;
+		else if(p == Boolean.TYPE)
+			c = Boolean.class;
+
+		return c;
+	}
+
 static public class MethodParamExpr implements Expr, MaybePrimitiveExpr{
 	final Class c;
 
@@ -7700,23 +7941,32 @@ static public class MethodParamExpr implements Expr, MaybePrimitiveExpr{
 	}
 }
 
-public static class CaseExpr extends UntypedExpr{
+public static class CaseExpr implements Expr, MaybePrimitiveExpr{
 	public final LocalBindingExpr expr;
 	public final int shift, mask, low, high;
 	public final Expr defaultExpr;
-	public final HashMap<Integer,Expr> tests;
+	public final SortedMap<Integer,Expr> tests;
 	public final HashMap<Integer,Expr> thens;
-	public final boolean allKeywords;
-
+	public final Keyword switchType;
+	public final Keyword testType;
+	public final Set<Integer> skipCheck;
+	public final Class returnType;
 	public final int line;
+
+	final static Type NUMBER_TYPE = Type.getType(Number.class);
+	final static Method intValueMethod = Method.getMethod("int intValue()");
 
 	final static Method hashMethod = Method.getMethod("int hash(Object)");
 	final static Method hashCodeMethod = Method.getMethod("int hashCode()");
-	final static Method equalsMethod = Method.getMethod("boolean equals(Object, Object)");
-
-
+	final static Method equivMethod = Method.getMethod("boolean equiv(Object, Object)");
+    final static Keyword compactKey = Keyword.intern(null, "compact");
+    final static Keyword sparseKey = Keyword.intern(null, "sparse");
+    final static Keyword hashIdentityKey = Keyword.intern(null, "hash-identity");
+    final static Keyword hashEquivKey = Keyword.intern(null, "hash-equiv");
+    final static Keyword intKey = Keyword.intern(null, "int");
+	//(case* expr shift mask default map<minhash, [test then]> table-type test-type skip-check?)
 	public CaseExpr(int line, LocalBindingExpr expr, int shift, int mask, int low, int high, Expr defaultExpr,
-	                HashMap<Integer,Expr> tests,HashMap<Integer,Expr> thens, boolean allKeywords){
+	        SortedMap<Integer,Expr> tests,HashMap<Integer,Expr> thens, Keyword switchType, Keyword testType, Set<Integer> skipCheck){
 		this.expr = expr;
 		this.shift = shift;
 		this.mask = mask;
@@ -7726,66 +7976,217 @@ public static class CaseExpr extends UntypedExpr{
 		this.tests = tests;
 		this.thens = thens;
 		this.line = line;
-		this.allKeywords = allKeywords;
+		if (switchType != compactKey && switchType != sparseKey)
+		    throw new IllegalArgumentException("Unexpected switch type: "+switchType);
+		this.switchType = switchType;
+        if (testType != intKey && testType != hashEquivKey && testType != hashIdentityKey)
+            throw new IllegalArgumentException("Unexpected test type: "+switchType);
+		this.testType = testType;
+		this.skipCheck = skipCheck;
+		Collection<Expr> returns = new ArrayList(thens.values());
+		returns.add(defaultExpr);
+		this.returnType = maybeJavaClass(returns);
+        if(RT.count(skipCheck) > 0 && RT.booleanCast(RT.WARN_ON_REFLECTION.deref()))
+            {
+            RT.errPrintWriter()
+              .format("Performance warning, %s:%d - hash collision of some case test constants; if selected, those entries will be tested sequentially.\n",
+                      SOURCE_PATH.deref(), line);
+            }
+	}
+
+	public boolean hasJavaClass(){
+	    return returnType != null;
+	}
+
+	public boolean canEmitPrimitive(){
+	return Util.isPrimitive(returnType);
+	}
+
+	public Class getJavaClass(){
+	    return returnType;
 	}
 
 	public Object eval() {
 		throw new UnsupportedOperationException("Can't eval case");
 	}
 
-	public void emit(C context, ObjExpr objx, GeneratorAdapter gen){
+    public void emit(C context, ObjExpr objx, GeneratorAdapter gen){
+        doEmit(context, objx, gen, false);
+    }
+
+    public void emitUnboxed(C context, ObjExpr objx, GeneratorAdapter gen){
+        doEmit(context, objx, gen, true);
+    }
+
+	public void doEmit(C context, ObjExpr objx, GeneratorAdapter gen, boolean emitUnboxed){
 		Label defaultLabel = gen.newLabel();
 		Label endLabel = gen.newLabel();
-		HashMap<Integer,Label> labels = new HashMap();
+		SortedMap<Integer,Label> labels = new TreeMap();
 
 		for(Integer i : tests.keySet())
 			{
 			labels.put(i, gen.newLabel());
 			}
 
-		Label[] la = new Label[(high-low)+1];
+        gen.visitLineNumber(line, gen.mark());
 
-		for(int i=low;i<=high;i++)
-			{
-			la[i-low] = labels.containsKey(i) ? labels.get(i) : defaultLabel;
-			}
+        Class primExprClass = maybePrimitiveType(expr);
+        Type primExprType = primExprClass == null ? null : Type.getType(primExprClass);
 
-		gen.visitLineNumber(line, gen.mark());
-		expr.emit(C.EXPRESSION, objx, gen);
-			gen.invokeStatic(UTIL_TYPE,hashMethod);
-		gen.push(shift);
-		gen.visitInsn(ISHR);
-		gen.push(mask);
-		gen.visitInsn(IAND);
-		gen.visitTableSwitchInsn(low, high, defaultLabel, la);
+        if (testType == intKey)
+		    emitExprForInts(objx, gen, primExprType, defaultLabel);
+        else
+            emitExprForHashes(objx, gen);
+
+        if (switchType == sparseKey)
+            {
+            Label[] la = new Label[labels.size()];
+            la = labels.values().toArray(la);
+            int[] ints = Numbers.int_array(tests.keySet());
+            gen.visitLookupSwitchInsn(defaultLabel, ints, la);
+            }
+        else
+            {
+            Label[] la = new Label[(high-low)+1];
+            for(int i=low;i<=high;i++)
+                {
+                la[i-low] = labels.containsKey(i) ? labels.get(i) : defaultLabel;
+                }
+            gen.visitTableSwitchInsn(low, high, defaultLabel, la);
+            }
 
 		for(Integer i : labels.keySet())
 			{
 			gen.mark(labels.get(i));
-			expr.emit(C.EXPRESSION, objx, gen);
-			tests.get(i).emit(C.EXPRESSION, objx, gen);
-			if(allKeywords)
-				{
-				gen.visitJumpInsn(IF_ACMPNE, defaultLabel);
-				}
+			if (testType == intKey)
+			    emitThenForInts(objx, gen, primExprType, tests.get(i), thens.get(i), defaultLabel, emitUnboxed);
+			else if (RT.contains(skipCheck, i) == RT.T)
+			    emitExpr(objx, gen, thens.get(i), emitUnboxed);
 			else
-				{
-				gen.invokeStatic(UTIL_TYPE, equalsMethod);
-				gen.ifZCmp(GeneratorAdapter.EQ, defaultLabel);
-				}
-			thens.get(i).emit(C.EXPRESSION,objx,gen);
+			    emitThenForHashes(objx, gen, tests.get(i), thens.get(i), defaultLabel, emitUnboxed);
 			gen.goTo(endLabel);
 			}
 
 		gen.mark(defaultLabel);
-		defaultExpr.emit(C.EXPRESSION, objx, gen);
+		emitExpr(objx, gen, defaultExpr, emitUnboxed);
 		gen.mark(endLabel);
 		if(context == C.STATEMENT)
 			gen.pop();
 	}
 
+	private boolean isShiftMasked(){
+	    return  mask != 0;
+	}
+
+	private void emitShiftMask(GeneratorAdapter gen){
+	    if (isShiftMasked())
+	        {
+            gen.push(shift);
+            gen.visitInsn(ISHR);
+            gen.push(mask);
+            gen.visitInsn(IAND);
+	        }
+	}
+
+    private void emitExprForInts(ObjExpr objx, GeneratorAdapter gen, Type exprType, Label defaultLabel){
+        if (exprType == null)
+            {
+            if(RT.booleanCast(RT.WARN_ON_REFLECTION.deref()))
+                {
+                RT.errPrintWriter()
+                  .format("Performance warning, %s:%d - case has int tests, but tested expression is not primitive.\n",
+                          SOURCE_PATH.deref(), line);
+                }
+            expr.emit(C.EXPRESSION, objx, gen);
+            gen.instanceOf(NUMBER_TYPE);
+            gen.ifZCmp(GeneratorAdapter.EQ, defaultLabel);
+            expr.emit(C.EXPRESSION, objx, gen);
+            gen.checkCast(NUMBER_TYPE);
+            gen.invokeVirtual(NUMBER_TYPE, intValueMethod);
+            emitShiftMask(gen);
+            }
+        else if (exprType == Type.LONG_TYPE
+                || exprType == Type.INT_TYPE
+                || exprType == Type.SHORT_TYPE
+                || exprType == Type.BYTE_TYPE)
+            {
+            expr.emitUnboxed(C.EXPRESSION, objx, gen);
+            gen.cast(exprType, Type.INT_TYPE);
+            emitShiftMask(gen);
+            }
+        else
+            {
+            gen.goTo(defaultLabel);
+            }
+    }
+
+    private void emitThenForInts(ObjExpr objx, GeneratorAdapter gen, Type exprType, Expr test, Expr then, Label defaultLabel, boolean emitUnboxed){
+        if (exprType == null)
+            {
+            expr.emit(C.EXPRESSION, objx, gen);
+            test.emit(C.EXPRESSION, objx, gen);
+            gen.invokeStatic(UTIL_TYPE, equivMethod);
+            gen.ifZCmp(GeneratorAdapter.EQ, defaultLabel);
+            emitExpr(objx, gen, then, emitUnboxed);
+            }
+        else if (exprType == Type.LONG_TYPE)
+            {
+            ((NumberExpr)test).emitUnboxed(C.EXPRESSION, objx, gen);
+            expr.emitUnboxed(C.EXPRESSION, objx, gen);
+            gen.ifCmp(Type.LONG_TYPE, GeneratorAdapter.NE, defaultLabel);
+            emitExpr(objx, gen, then, emitUnboxed);
+            }
+        else if (exprType == Type.INT_TYPE
+                || exprType == Type.SHORT_TYPE
+                || exprType == Type.BYTE_TYPE)
+            {
+            if (isShiftMasked())
+                {
+                ((NumberExpr)test).emitUnboxed(C.EXPRESSION, objx, gen);
+                expr.emitUnboxed(C.EXPRESSION, objx, gen);
+                gen.cast(exprType, Type.LONG_TYPE);
+                gen.ifCmp(Type.LONG_TYPE, GeneratorAdapter.NE, defaultLabel);
+                }
+            // else direct match
+            emitExpr(objx, gen, then, emitUnboxed);
+            }
+        else
+            {
+            gen.goTo(defaultLabel);
+            }
+    }
+
+    private void emitExprForHashes(ObjExpr objx, GeneratorAdapter gen){
+        expr.emit(C.EXPRESSION, objx, gen);
+        gen.invokeStatic(UTIL_TYPE,hashMethod);
+        emitShiftMask(gen);
+    }
+
+    private void emitThenForHashes(ObjExpr objx, GeneratorAdapter gen, Expr test, Expr then, Label defaultLabel, boolean emitUnboxed){
+        expr.emit(C.EXPRESSION, objx, gen);
+        test.emit(C.EXPRESSION, objx, gen);
+        if(testType == hashIdentityKey)
+            {
+            gen.visitJumpInsn(IF_ACMPNE, defaultLabel);
+            }
+        else
+            {
+            gen.invokeStatic(UTIL_TYPE, equivMethod);
+            gen.ifZCmp(GeneratorAdapter.EQ, defaultLabel);
+            }
+        emitExpr(objx, gen, then, emitUnboxed);
+    }
+
+    private static void emitExpr(ObjExpr objx, GeneratorAdapter gen, Expr expr, boolean emitUnboxed){
+        if (emitUnboxed && expr instanceof MaybePrimitiveExpr)
+            ((MaybePrimitiveExpr)expr).emitUnboxed(C.EXPRESSION,objx,gen);
+        else
+            expr.emit(C.EXPRESSION,objx,gen);
+    }
+
+
 	static class Parser implements IParser{
-		//(case* expr shift mask low high default map<minhash, [test then]> identity?)
+		//(case* expr shift mask default map<minhash, [test then]> table-type test-type skip-check?)
 		//prepared by case macro and presumed correct
 		//case macro binds actual expr in let so expr is always a local,
 		//no need to worry about multiple evaluation
@@ -7794,25 +8195,43 @@ public static class CaseExpr extends UntypedExpr{
 			if(context == C.EVAL)
 				return analyze(context, RT.list(RT.list(FN, PersistentVector.EMPTY, form)));
 			PersistentVector args = PersistentVector.create(form.next());
-			HashMap<Integer,Expr> tests = new HashMap();
-			HashMap<Integer,Expr> thens = new HashMap();
 
-            LocalBindingExpr testexpr = (LocalBindingExpr) analyze(C.EXPRESSION, args.nth(0));
+			Object exprForm = args.nth(0);
+			int shift = ((Number)args.nth(1)).intValue();
+			int mask = ((Number)args.nth(2)).intValue();
+			Object defaultForm = args.nth(3);
+			Map caseMap = (Map)args.nth(4);
+			Keyword switchType = ((Keyword)args.nth(5));
+			Keyword testType = ((Keyword)args.nth(6));
+			Set skipCheck = RT.count(args) < 8 ? null : (Set)args.nth(7);
+
+            ISeq keys = RT.keys(caseMap);
+            int low = ((Number)RT.first(keys)).intValue();
+            int high = ((Number)RT.nth(keys, RT.count(keys)-1)).intValue();
+
+            LocalBindingExpr testexpr = (LocalBindingExpr) analyze(C.EXPRESSION, exprForm);
 			testexpr.shouldClear = false;
-            
+
+            SortedMap<Integer,Expr> tests = new TreeMap();
+            HashMap<Integer,Expr> thens = new HashMap();
+
             PathNode branch = new PathNode(PATHTYPE.BRANCH, (PathNode) CLEAR_PATH.get());
-			for(Object o : ((Map)args.nth(6)).entrySet())
+
+			for(Object o : caseMap.entrySet())
 				{
 				Map.Entry e = (Map.Entry) o;
 				Integer minhash = ((Number)e.getKey()).intValue();
-				MapEntry me = (MapEntry) e.getValue();
-				Expr testExpr = new ConstantExpr(me.getKey());
-				tests.put(minhash, testExpr);
+                Object pair = e.getValue(); // [test-val then-expr]
+                Expr testExpr = testType == intKey
+                                    ? NumberExpr.parse(((Number)RT.first(pair)).intValue())
+                                    : new ConstantExpr(RT.first(pair));
+                tests.put(minhash, testExpr);
+
                 Expr thenExpr;
                 try {
                     Var.pushThreadBindings(
                             RT.map(CLEAR_PATH, new PathNode(PATHTYPE.PATH,branch)));
-                    thenExpr = analyze(context, me.getValue());
+                    thenExpr = analyze(context, RT.second(pair));
                     }
                 finally{
                     Var.popThreadBindings();
@@ -7824,21 +8243,15 @@ public static class CaseExpr extends UntypedExpr{
             try {
                 Var.pushThreadBindings(
                         RT.map(CLEAR_PATH, new PathNode(PATHTYPE.PATH,branch)));
-                defaultExpr = analyze(context, args.nth(5));
+                defaultExpr = analyze(context, args.nth(3));
                 }
             finally{
                 Var.popThreadBindings();
                 }
 
-			return new CaseExpr(((Number)LINE.deref()).intValue(),
-			                  testexpr,
-			                  ((Number)args.nth(1)).intValue(),
-			                  ((Number)args.nth(2)).intValue(),
-			                  ((Number)args.nth(3)).intValue(),
-			                  ((Number)args.nth(4)).intValue(),
-			                  defaultExpr,
-			                  tests,thens,args.nth(7) != RT.F);
-
+            int line = ((Number)LINE.deref()).intValue();
+			return new CaseExpr(line, testexpr, shift, mask, low, high,
+			        defaultExpr, tests, thens, switchType, testType, skipCheck);
 		}
 	}
 }

@@ -58,6 +58,18 @@ static public boolean equiv(double k1, Object k2){
 	return equiv((Object)k1, k2);
 }
 
+static public boolean equiv(boolean k1, boolean k2){
+	return k1 == k2;
+}
+
+static public boolean equiv(Object k1, boolean k2){
+	return equiv(k1, (Object)k2);
+}
+
+static public boolean equiv(boolean k1, Object k2){
+	return equiv((Object)k1, k2);
+}
+
 static public boolean pcequiv(Object k1, Object k2){
 	if(k1 instanceof IPersistentCollection)
 		return ((IPersistentCollection)k1).equiv(k2);
@@ -133,8 +145,9 @@ static public <K,V> void clearCache(ReferenceQueue rq, ConcurrentHashMap<K, Refe
 			;
 		for(Map.Entry<K, Reference<V>> e : cache.entrySet())
 			{
-			if(e.getValue().get() == null)
-				cache.remove(e.getKey(), e.getValue());
+            Reference<V> val = e.getValue();
+			if(val != null && val.get() == null)
+				cache.remove(e.getKey(), val);
 			}
 		}
 }

@@ -887,11 +887,28 @@
     (reduce1 conj () coll))
 
 ;;math stuff
+(defn ^:private nary-inline
+  ([op] (nary-inline op op))
+  ([op unchecked-op]
+     (fn
+       ([x] (let [op (if *unchecked-math* unchecked-op op)]
+              `(. clojure.lang.Numbers (~op ~x))))
+       ([x y] (let [op (if *unchecked-math* unchecked-op op)]
+                `(. clojure.lang.Numbers (~op ~x ~y))))
+       ([x y & more]
+          (let [op (if *unchecked-math* unchecked-op op)]
+            (reduce1
+             (fn [a b] `(. clojure.lang.Numbers (~op ~a ~b)))
+             `(. clojure.lang.Numbers (~op ~x ~y)) more))))))
+
+(defn ^:private >1? [n] (clojure.lang.Numbers/gt n 1))
+(defn ^:private >0? [n] (clojure.lang.Numbers/gt n 0))
+
 (defn +'
   "Returns the sum of nums. (+) returns 0. Supports arbitrary precision.
   See also: +"
-  {:inline (fn [x y] `(. clojure.lang.Numbers (addP ~x ~y)))
-   :inline-arities #{2}
+  {:inline (nary-inline 'addP)
+   :inline-arities >1?
    :added "1.0"}
   ([] 0)
   ([x] (cast Number x))
@@ -902,8 +919,8 @@
 (defn +
   "Returns the sum of nums. (+) returns 0. Does not auto-promote
   longs, will throw on overflow. See also: +'"
-  {:inline (fn [x y] `(. clojure.lang.Numbers (~(if *unchecked-math* 'unchecked_add 'add) ~x ~y)))
-   :inline-arities #{2}
+  {:inline (nary-inline 'add 'unchecked_add)
+   :inline-arities >1?
    :added "1.2"}
   ([] 0)
   ([x] (cast Number x))
@@ -914,8 +931,8 @@
 (defn *'
   "Returns the product of nums. (*) returns 1. Supports arbitrary precision.
   See also: *"
-  {:inline (fn [x y] `(. clojure.lang.Numbers (multiplyP ~x ~y)))
-   :inline-arities #{2}
+  {:inline (nary-inline 'multiplyP)
+   :inline-arities >1?
    :added "1.0"}
   ([] 1)
   ([x] (cast Number x))
@@ -926,8 +943,8 @@
 (defn *
   "Returns the product of nums. (*) returns 1. Does not auto-promote
   longs, will throw on overflow. See also: *'"
-  {:inline (fn [x y] `(. clojure.lang.Numbers (~(if *unchecked-math* 'unchecked_multiply 'multiply) ~x ~y)))
-   :inline-arities #{2}
+  {:inline (nary-inline 'multiply 'unchecked_multiply)
+   :inline-arities >1?
    :added "1.2"}
   ([] 1)
   ([x] (cast Number x))
@@ -938,8 +955,8 @@
 (defn /
   "If no denominators are supplied, returns 1/numerator,
   else returns numerator divided by all of the denominators."
-  {:inline (fn [x y] `(. clojure.lang.Numbers (divide ~x ~y)))
-   :inline-arities #{2}
+  {:inline (nary-inline 'divide)
+   :inline-arities >1?
    :added "1.0"}
   ([x] (/ 1 x))
   ([x y] (. clojure.lang.Numbers (divide x y)))
@@ -950,8 +967,8 @@
   "If no ys are supplied, returns the negation of x, else subtracts
   the ys from x and returns the result. Supports arbitrary precision.
   See also: -"
-  {:inline (fn [& args] `(. clojure.lang.Numbers (minusP ~@args)))
-   :inline-arities #{1 2}
+  {:inline (nary-inline 'minusP)
+   :inline-arities >0?
    :added "1.0"}
   ([x] (. clojure.lang.Numbers (minusP x)))
   ([x y] (. clojure.lang.Numbers (minusP x y)))
@@ -962,8 +979,8 @@
   "If no ys are supplied, returns the negation of x, else subtracts
   the ys from x and returns the result. Does not auto-promote
   longs, will throw on overflow. See also: -'"
-  {:inline (fn [& args] `(. clojure.lang.Numbers (~(if *unchecked-math* 'unchecked_minus 'minus) ~@args)))
-   :inline-arities #{1 2}
+  {:inline (nary-inline 'minus 'unchecked_minus)
+   :inline-arities >0?
    :added "1.2"}
   ([x] (. clojure.lang.Numbers (minus x)))
   ([x y] (. clojure.lang.Numbers (minus x y)))
@@ -1033,18 +1050,20 @@
 (defn max
   "Returns the greatest of the nums."
   {:added "1.0"
-   :static true}
+   :inline-arities >1?
+   :inline (nary-inline 'max)}
   ([x] x)
-  ([x y] (if (> x y) x y))
+  ([x y] (. clojure.lang.Numbers (max x y)))
   ([x y & more]
    (reduce1 max (max x y) more)))
 
 (defn min
   "Returns the least of the nums."
   {:added "1.0"
-   :static true}
+   :inline-arities >1?
+   :inline (nary-inline 'min)}
   ([x] x)
-  ([x y] (if (< x y) x y))
+  ([x y] (. clojure.lang.Numbers (min x y)))
   ([x y & more]
    (reduce1 min (min x y) more)))
 
@@ -1208,27 +1227,40 @@
 
 (defn bit-and
   "Bitwise and"
-   {:inline (fn [x y] `(. clojure.lang.Numbers (and ~x ~y)))
+   {:inline (nary-inline 'and)
+    :inline-arities >1?
     :added "1.0"}
-  [x y] (. clojure.lang.Numbers and x y))
+   ([x y] (. clojure.lang.Numbers and x y))
+   ([x y & more]
+      (reduce1 bit-and (bit-and x y) more)))
 
 (defn bit-or
   "Bitwise or"
-  {:inline (fn [x y] `(. clojure.lang.Numbers (or ~x ~y)))
+  {:inline (nary-inline 'or)
+   :inline-arities >1?
    :added "1.0"}
-  [x y] (. clojure.lang.Numbers or x y))
+  ([x y] (. clojure.lang.Numbers or x y))
+  ([x y & more]
+    (reduce1 bit-or (bit-or x y) more)))
 
 (defn bit-xor
   "Bitwise exclusive or"
-  {:inline (fn [x y] `(. clojure.lang.Numbers (xor ~x ~y)))
+  {:inline (nary-inline 'xor)
+   :inline-arities >1?
    :added "1.0"}
-  [x y] (. clojure.lang.Numbers xor x y))
+  ([x y] (. clojure.lang.Numbers xor x y))
+  ([x y & more]
+    (reduce1 bit-xor (bit-xor x y) more)))
 
 (defn bit-and-not
   "Bitwise and with complement"
-  {:added "1.0"
+  {:inline (nary-inline 'andNot)
+   :inline-arities >1?
+   :added "1.0"
    :static true}
-  [x y] (. clojure.lang.Numbers andNot x y))
+  ([x y] (. clojure.lang.Numbers andNot x y))
+  ([x y & more]
+    (reduce1 bit-and-not (bit-and-not x y) more)))
 
 
 (defn bit-clear
@@ -1268,11 +1300,25 @@
    :added "1.0"}
   [x n] (. clojure.lang.Numbers shiftRight x n))
 
+(defn integer?
+  "Returns true if n is an integer"
+  {:added "1.0"
+   :static true}
+  [n]
+  (or (instance? Integer n)
+      (instance? Long n)
+      (instance? clojure.lang.BigInt n)
+      (instance? BigInteger n)
+      (instance? Short n)
+      (instance? Byte n)))
+
 (defn even?
   "Returns true if n is even, throws an exception if n is not an integer"
   {:added "1.0"
    :static true}
-  [n] (zero? (bit-and n 1)))
+   [n] (if (integer? n)
+        (zero? (bit-and (clojure.lang.RT/uncheckedLongCast n) 1))
+        (throw (IllegalArgumentException. (str "Argument must be an integer: " n)))))
 
 (defn odd?
   "Returns true if n is odd, throws an exception if n is not an integer"
@@ -1502,6 +1548,19 @@
               (list form x)))
   ([x form & more] `(->> (->> ~x ~form) ~@more)))
 
+(def map)
+
+(defn ^:private check-valid-options
+  "Throws an exception if the given option map contains keys not listed
+  as valid, else returns nil."
+  [options & valid-keys]
+  (when (seq (apply disj (apply hash-set (keys options)) valid-keys))
+    (throw
+      (IllegalArgumentException.
+        (apply str "Only these options are valid: "
+          (first valid-keys)
+          (map #(str ", " %) (rest valid-keys)))))))
+
 ;;multimethods
 (def global-hierarchy)
 
@@ -1541,6 +1600,7 @@
     (let [options   (apply hash-map options)
           default   (get options :default :default)
           hierarchy (get options :hierarchy #'global-hierarchy)]
+      (check-valid-options options :default :hierarchy)
       `(let [v# (def ~mm-name)]
          (when-not (and (.hasRoot v#) (instance? clojure.lang.MultiFn (deref v#)))
            (def ~(with-meta mm-name m)
@@ -2234,8 +2294,7 @@
             ret))))))
 
 (defn juxt 
-  "Alpha - name subject to change.
-  Takes a set of functions and returns a fn that is the juxtaposition
+  "Takes a set of functions and returns a fn that is the juxtaposition
   of those fns.  The returned fn takes a variable number of args, and
   returns a vector containing the result of applying each fn to the
   args (left-to-right).
@@ -2652,6 +2711,57 @@
   ([keyfn ^java.util.Comparator comp coll]
    (sort (fn [x y] (. comp (compare (keyfn x) (keyfn y)))) coll)))
 
+(defn dorun
+  "When lazy sequences are produced via functions that have side
+  effects, any effects other than those needed to produce the first
+  element in the seq do not occur until the seq is consumed. dorun can
+  be used to force any effects. Walks through the successive nexts of
+  the seq, does not retain the head and returns nil."
+  {:added "1.0"
+   :static true}
+  ([coll]
+   (when (seq coll)
+     (recur (next coll))))
+  ([n coll]
+   (when (and (seq coll) (pos? n))
+     (recur (dec n) (next coll)))))
+
+(defn doall
+  "When lazy sequences are produced via functions that have side
+  effects, any effects other than those needed to produce the first
+  element in the seq do not occur until the seq is consumed. doall can
+  be used to force any effects. Walks through the successive nexts of
+  the seq, retains the head and returns it, thus causing the entire
+  seq to reside in memory at one time."
+  {:added "1.0"
+   :static true}
+  ([coll]
+   (dorun coll)
+   coll)
+  ([n coll]
+   (dorun n coll)
+   coll))
+
+(defn nthnext
+  "Returns the nth next of coll, (seq coll) when n is 0."
+  {:added "1.0"
+   :static true}
+  [coll n]
+    (loop [n n xs (seq coll)]
+      (if (and xs (pos? n))
+        (recur (dec n) (next xs))
+        xs)))
+
+(defn nthrest
+  "Returns the nth rest of coll, coll when n is 0."
+  {:added "1.3"
+   :static true}
+  [coll n]
+    (loop [n n xs coll]
+      (if (and (pos? n) (seq xs))
+        (recur (dec n) (rest xs))
+        xs)))
+
 (defn partition
   "Returns a lazy sequence of lists of n items each, at offsets step
   apart. If step is not supplied, defaults to n, i.e. the partitions
@@ -2665,15 +2775,15 @@
   ([n step coll]
      (lazy-seq
        (when-let [s (seq coll)]
-         (let [p (take n s)]
+         (let [p (doall (take n s))]
            (when (= n (count p))
-             (cons p (partition n step (drop step s))))))))
+             (cons p (partition n step (nthrest s step))))))))
   ([n step pad coll]
      (lazy-seq
        (when-let [s (seq coll)]
-         (let [p (take n s)]
+         (let [p (doall (take n s))]
            (if (= n (count p))
-             (cons p (partition n step pad (drop step s)))
+             (cons p (partition n step pad (nthrest s step)))
              (list (take n (concat p pad)))))))))
 
 ;; evaluation
@@ -2741,37 +2851,6 @@
                                    ~subform
                                    ~@(when needrec [recform]))))))])))))]
     (nth (step nil (seq seq-exprs)) 1)))
-
-(defn dorun
-  "When lazy sequences are produced via functions that have side
-  effects, any effects other than those needed to produce the first
-  element in the seq do not occur until the seq is consumed. dorun can
-  be used to force any effects. Walks through the successive nexts of
-  the seq, does not retain the head and returns nil."
-  {:added "1.0"
-   :static true}
-  ([coll]
-   (when (seq coll)
-     (recur (next coll))))
-  ([n coll]
-   (when (and (seq coll) (pos? n))
-     (recur (dec n) (next coll)))))
-
-(defn doall
-  "When lazy sequences are produced via functions that have side
-  effects, any effects other than those needed to produce the first
-  element in the seq do not occur until the seq is consumed. doall can
-  be used to force any effects. Walks through the successive nexts of
-  the seq, retains the head and returns it, thus causing the entire
-  seq to reside in memory at one time."
-  {:added "1.0"
-   :static true}
-  ([coll]
-   (dorun coll)
-   coll)
-  ([n coll]
-   (dorun n coll)
-   coll))
 
 (defn await
   "Blocks the current thread (indefinitely!) until all actions
@@ -3077,25 +3156,13 @@
   [x]
   (instance? Number x))
 
-(defn integer?
-  "Returns true if n is an integer"
-  {:added "1.0"
-   :static true}
-  [n]
-  (or (instance? Integer n)
-      (instance? Long n)
-      (instance? clojure.lang.BigInt n)
-      (instance? BigInteger n)
-      (instance? Short n)
-      (instance? Byte n)))
-
 (defn mod
   "Modulus of num and div. Truncates toward negative infinity."
   {:added "1.0"
    :static true}
   [num div] 
   (let [m (rem num div)] 
-    (if (or (zero? m) (pos? (* num div))) 
+    (if (or (zero? m) (= (pos? num) (pos? div)))
       m 
       (+ m div))))
 
@@ -3135,10 +3202,11 @@
   (or (instance? Double n)
       (instance? Float n)))
 
-(defn rational? [n]
+(defn rational? 
   "Returns true if n is a rational number"
   {:added "1.0"
    :static true}
+  [n]
   (or (integer? n) (ratio? n) (decimal? n)))
 
 (defn bigint
@@ -3182,7 +3250,9 @@
 
 (def ^:dynamic ^{:private true} print-initialized false)
 
-(defmulti print-method (fn [x writer] (type x)))
+(defmulti print-method (fn [x writer]
+                         (let [t (get (meta x) :type)]
+                           (if (keyword? t) t (class x)))))
 (defmulti print-dup (fn [x writer] (class x)))
 
 (defn pr-on
@@ -3822,17 +3892,6 @@
   ([] (. clojure.lang.PersistentArrayMap EMPTY))
   ([& keyvals] (clojure.lang.PersistentArrayMap/createWithCheck (to-array keyvals))))
 
-(defn nthnext
-  "Returns the nth next of coll, (seq coll) when n is 0."
-  {:added "1.0"
-   :static true}
-  [coll n]
-    (loop [n n xs (seq coll)]
-      (if (and xs (pos? n))
-        (recur (dec n) (next xs))
-        xs)))
-
-
 ;redefine let and loop  with destructuring
 (defn destructure [bindings]
   (let [bents (partition 2 bindings)
@@ -4162,12 +4221,16 @@
 
 (defmacro assert
   "Evaluates expr and throws an exception if it does not evaluate to
- logical true."
+  logical true."
   {:added "1.0"}
-  [x]
-  (when *assert*
-    `(when-not ~x
-       (throw (new AssertionError (str "Assert failed: " (pr-str '~x)))))))
+  ([x]
+     (when *assert*
+       `(when-not ~x
+          (throw (new AssertionError (str "Assert failed: " (pr-str '~x)))))))
+  ([x message]
+     (when *assert*
+       `(when-not ~x
+          (throw (new AssertionError (str "Assert failed: " ~message "\n" (pr-str '~x))))))))
 
 (defn test
   "test [v] finds fn at key :test in var metadata and calls it,
@@ -5698,25 +5761,145 @@
                              (map #(cons `fn %) fnspecs)))
            ~@body))
 
+(defn fnil
+  "Takes a function f, and returns a function that calls f, replacing
+  a nil first argument to f with the supplied value x. Higher arity
+  versions can replace arguments in the second and third
+  positions (y, z). Note that the function f can take any number of
+  arguments, not just the one(s) being nil-patched."
+  {:added "1.2"
+   :static true}
+  ([f x]
+   (fn
+     ([a] (f (if (nil? a) x a)))
+     ([a b] (f (if (nil? a) x a) b))
+     ([a b c] (f (if (nil? a) x a) b c))
+     ([a b c & ds] (apply f (if (nil? a) x a) b c ds))))
+  ([f x y]
+   (fn
+     ([a b] (f (if (nil? a) x a) (if (nil? b) y b)))
+     ([a b c] (f (if (nil? a) x a) (if (nil? b) y b) c))
+     ([a b c & ds] (apply f (if (nil? a) x a) (if (nil? b) y b) c ds))))
+  ([f x y z]
+   (fn
+     ([a b] (f (if (nil? a) x a) (if (nil? b) y b)))
+     ([a b c] (f (if (nil? a) x a) (if (nil? b) y b) (if (nil? c) z c)))
+     ([a b c & ds] (apply f (if (nil? a) x a) (if (nil? b) y b) (if (nil? c) z c) ds)))))
+
 
 ;;;;;;; case ;;;;;;;;;;;;;
 (defn- shift-mask [shift mask x]
   (-> x (bit-shift-right shift) (bit-and mask)))
 
-(defn- min-hash 
-  "takes a collection of keys and returns [shift mask]"
-  [keys]
-  (let [hashes (map hash keys)
-        cnt (count keys)]
-    (when-not (apply distinct? hashes)
-      (throw (IllegalArgumentException. "Hashes must be distinct")))
-    (or (first 
-         (filter (fn [[s m]]
-                   (apply distinct? (map #(shift-mask s m %) hashes)))
-                 (for [mask (map #(dec (bit-shift-left 1 %)) (range 1 14))
-                       shift (range 0 31)]
-                   [shift mask])))
-        (throw (IllegalArgumentException. "No distinct mapping found")))))
+(def ^:private max-mask-bits 13)
+(def ^:private max-switch-table-size (bit-shift-left 1 max-mask-bits))
+
+(defn- maybe-min-hash
+  "takes a collection of hashes and returns [shift mask] or nil if none found"
+  [hashes]
+  (first
+    (filter (fn [[s m]]
+              (apply distinct? (map #(shift-mask s m %) hashes)))
+            (for [mask (map #(dec (bit-shift-left 1 %)) (range 1 (inc max-mask-bits)))
+                  shift (range 0 31)]
+              [shift mask]))))
+
+(defn- case-map
+  "Transforms a sequence of test constants and a corresponding sequence of then
+  expressions into a sorted map to be consumed by case*. The form of the map
+  entries are {(case-f test) [(test-f test) then]}."
+  [case-f test-f tests thens]
+  (into1 (sorted-map)
+    (zipmap (map case-f tests)
+            (map vector
+              (map test-f tests)
+              thens))))
+
+(defn- fits-table?
+  "Returns true if the collection of ints can fit within the
+  max-table-switch-size, false otherwise."
+  [ints]
+  (< (- (apply max (seq ints)) (apply min (seq ints))) max-switch-table-size))
+
+(defn- prep-ints
+  "Takes a sequence of int-sized test constants and a corresponding sequence of
+  then expressions. Returns a tuple of [shift mask case-map switch-type] where
+  case-map is a map of int case values to [test then] tuples, and switch-type
+  is either :sparse or :compact."
+  [tests thens]
+  (if (fits-table? tests)
+    ; compact case ints, no shift-mask
+    [0 0 (case-map int int tests thens) :compact]
+    (let [[shift mask] (or (maybe-min-hash (map int tests)) [0 0])]
+      (if (zero? mask)
+        ; sparse case ints, no shift-mask
+        [0 0 (case-map int int tests thens) :sparse]
+        ; compact case ints, with shift-mask
+        [shift mask (case-map #(shift-mask shift mask (int %)) int tests thens) :compact]))))
+
+(defn- merge-hash-collisions
+  "Takes a case expression, default expression, and a sequence of test constants
+  and a corresponding sequence of then expressions. Returns a tuple of
+  [tests thens skip-check-set] where no tests have the same hash. Each set of
+  input test constants with the same hash is replaced with a single test
+  constant (the case int), and their respective thens are combined into:
+  (condp = expr
+    test-1 then-1
+    ...
+    test-n then-n
+    default).
+  The skip-check is a set of case ints for which post-switch equivalence
+  checking must not be done (the cases holding the above condp thens)."
+  [expr-sym default tests thens]
+  (let [buckets (loop [m {} ks tests vs thens]
+                  (if (and ks vs)
+                    (recur
+                      (update-in m [(hash (first ks))] (fnil conj []) [(first ks) (first vs)])
+                      (next ks) (next vs))
+                    m))
+        assoc-multi (fn [m h bucket]
+                      (let [testexprs (apply concat bucket)
+                            expr `(condp = ~expr-sym ~@testexprs ~default)]
+                        (assoc m h expr)))
+        hmap (reduce1
+               (fn [m [h bucket]]
+                 (if (== 1 (count bucket))
+                   (assoc m (ffirst bucket) (second (first bucket)))
+                   (assoc-multi m h bucket)))
+               {} buckets)
+        skip-check (->> buckets
+                     (filter #(< 1 (count (second %))))
+                     (map first)
+                     (into1 #{}))]
+    [(keys hmap) (vals hmap) skip-check]))
+
+(defn- prep-hashes
+  "Takes a sequence of test constants and a corresponding sequence of then
+  expressions. Returns a tuple of [shift mask case-map switch-type skip-check]
+  where case-map is a map of int case values to [test then] tuples, switch-type
+  is either :sparse or :compact, and skip-check is a set of case ints for which
+  post-switch equivalence checking must not be done (occurs with hash
+  collisions)."
+  [expr-sym default tests thens]
+  (let [hashes (into1 #{} (map hash tests))]
+    (if (== (count tests) (count hashes))
+      (if (fits-table? hashes)
+        ; compact case ints, no shift-mask
+        [0 0 (case-map hash identity tests thens) :compact]
+        (let [[shift mask] (or (maybe-min-hash hashes) [0 0])]
+          (if (zero? mask)
+            ; sparse case ints, no shift-mask
+            [0 0 (case-map hash identity tests thens) :sparse]
+            ; compact case ints, with shift-mask
+            [shift mask (case-map #(shift-mask shift mask (hash %)) identity tests thens) :compact])))
+      ; resolve hash collisions and try again
+      (let [[tests thens skip-check] (merge-hash-collisions expr-sym default tests thens)
+            [shift mask case-map switch-type] (prep-hashes expr-sym default tests thens)
+            skip-check (if (zero? mask)
+                         skip-check
+                         (into1 #{} (map #(shift-mask shift mask %) skip-check)))]
+        [shift mask case-map switch-type skip-check]))))
+
 
 (defmacro case 
   "Takes an expression, and a set of clauses.
@@ -5747,24 +5930,40 @@
   (let [ge (with-meta (gensym) {:tag Object})
         default (if (odd? (count clauses)) 
                   (last clauses)
-                  `(throw (IllegalArgumentException. (str "No matching clause: " ~ge))))
-        cases (partition 2 clauses)
-        case-map (reduce1 (fn [m [test expr]]
-                           (if (seq? test)
-                             (into1 m (zipmap test (repeat expr)))
-                             (assoc m test expr))) 
-                           {} cases)
-        [shift mask] (if (seq case-map) (min-hash (keys case-map)) [0 0])
-        
-        hmap (reduce1 (fn [m [test expr :as te]]
-                       (assoc m (shift-mask shift mask (hash test)) te))
-                     (sorted-map) case-map)]
-    `(let [~ge ~e]
-       ~(condp = (count clauses)
-          0 default
-          1 default
-          `(case* ~ge ~shift ~mask ~(key (first hmap)) ~(key (last hmap)) ~default ~hmap 
-                        ~(every? keyword? (keys case-map)))))))
+                  `(throw (IllegalArgumentException. (str "No matching clause: " ~ge))))]
+    (if (> 2 (count clauses))
+      `(let [~ge ~e] ~default)
+      (let [pairs (partition 2 clauses)
+            assoc-test (fn assoc-test [m test expr]
+                         (if (contains? m test)
+                           (throw (IllegalArgumentException. (str "Duplicate case test constant: " test)))
+                           (assoc m test expr)))
+            pairs (reduce1
+                       (fn [m [test expr]]
+                         (if (seq? test)
+                           (reduce1 #(assoc-test %1 %2 expr) m test)
+                           (assoc-test m test expr)))
+                       {} pairs)
+            tests (keys pairs)
+            thens (vals pairs)
+            mode (cond
+                   (every? #(and (integer? %) (<= Integer/MIN_VALUE % Integer/MAX_VALUE)) tests)
+                   :ints
+                   (every? keyword? tests)
+                   :identity
+                   :else :hashes)]
+        (condp = mode
+          :ints
+          (let [[shift mask imap switch-type] (prep-ints tests thens)]
+            `(let [~ge ~e] (case* ~ge ~shift ~mask ~default ~imap ~switch-type :int)))
+          :hashes
+          (let [[shift mask imap switch-type skip-check] (prep-hashes ge default tests thens)]
+            `(let [~ge ~e] (case* ~ge ~shift ~mask ~default ~imap ~switch-type :hash-equiv ~skip-check)))
+          :identity
+          (let [[shift mask imap switch-type skip-check] (prep-hashes ge default tests thens)]
+            `(let [~ge ~e] (case* ~ge ~shift ~mask ~default ~imap ~switch-type :hash-identity ~skip-check))))))))
+
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; helper files ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (alter-meta! (find-ns 'clojure.core) assoc :doc "Fundamental library of the Clojure language")
@@ -6040,7 +6239,7 @@
         (assoc! ret k (conj (get ret k []) x))))
     (transient {}) coll)))
 
-(defn partition-by 
+(defn partition-by
   "Applies f to each value in coll, splitting it each time f returns
    a new value.  Returns a lazy seq of partitions."
   {:added "1.2"
@@ -6050,8 +6249,8 @@
    (when-let [s (seq coll)]
      (let [fst (first s)
            fv (f fst)
-           run (cons fst (take-while #(= fv (f %)) (rest s)))]
-       (cons run (partition-by f (drop (count run) s)))))))
+           run (cons fst (take-while #(= fv (f %)) (next s)))]
+       (cons run (partition-by f (seq (drop (count run) s))))))))
 
 (defn frequencies
   "Returns a map from distinct items in coll to the number of times
@@ -6098,7 +6297,8 @@
   ([n step coll]
      (lazy-seq
       (when-let [s (seq coll)]
-        (cons (take n s) (partition-all n step (drop step s)))))))
+        (let [seg (doall (take n s))]
+          (cons seg (partition-all n step (nthrest s step))))))))
 
 (defn shuffle
   "Return a random permutation of coll"
@@ -6177,31 +6377,6 @@
                         (keepi (inc idx) (rest s))
                         (cons x (keepi (inc idx) (rest s)))))))))]
        (keepi 0 coll))))
-
-(defn fnil
-  "Takes a function f, and returns a function that calls f, replacing
-  a nil first argument to f with the supplied value x. Higher arity
-  versions can replace arguments in the second and third
-  positions (y, z). Note that the function f can take any number of
-  arguments, not just the one(s) being nil-patched."
-  {:added "1.2"
-   :static true}
-  ([f x]
-   (fn
-     ([a] (f (if (nil? a) x a)))
-     ([a b] (f (if (nil? a) x a) b))
-     ([a b c] (f (if (nil? a) x a) b c))
-     ([a b c & ds] (apply f (if (nil? a) x a) b c ds))))
-  ([f x y]
-   (fn
-     ([a b] (f (if (nil? a) x a) (if (nil? b) y b)))
-     ([a b c] (f (if (nil? a) x a) (if (nil? b) y b) c))
-     ([a b c & ds] (apply f (if (nil? a) x a) (if (nil? b) y b) c ds))))
-  ([f x y z]
-   (fn
-     ([a b] (f (if (nil? a) x a) (if (nil? b) y b)))
-     ([a b c] (f (if (nil? a) x a) (if (nil? b) y b) (if (nil? c) z c)))
-     ([a b c & ds] (apply f (if (nil? a) x a) (if (nil? b) y b) (if (nil? c) z c) ds)))))
 
 (defn every-pred
   "Takes a set of predicates and returns a function f that returns true if all of its
