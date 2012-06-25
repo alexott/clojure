@@ -13,7 +13,7 @@ package clojure.lang;
 import java.io.Serializable;
 import java.util.*;
 
-public abstract class ASeq extends Obj implements ISeq, Sequential, List, Serializable {
+public abstract class ASeq extends Obj implements ISeq, Sequential, List, Serializable, IHashEq {
 transient int _hash = -1;
 
 public String toString(){
@@ -71,6 +71,15 @@ public int hashCode(){
 		this._hash = hash;
 		}
 	return _hash;
+}
+
+public int hasheq(){
+	int hash = 1;
+	for(ISeq s = seq(); s != null; s = s.next())
+		{
+		hash = 31 * hash + Util.hasheq(s.first());
+		}
+	return hash;
 }
 
 
@@ -166,19 +175,7 @@ public boolean containsAll(Collection c){
 }
 
 public Object[] toArray(Object[] a){
-	if(a.length >= count())
-		{
-		ISeq s = seq();
-		for(int i = 0; s != null; ++i, s = s.next())
-			{
-			a[i] = s.first();
-			}
-		if(a.length > count())
-			a[count()] = null;
-		return a;
-		}
-	else
-		return toArray();
+    return RT.seqToPassedArray(seq(), a);
 }
 
 public int size(){

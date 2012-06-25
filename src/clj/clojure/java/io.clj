@@ -10,6 +10,7 @@
   ^{:author "Stuart Sierra, Chas Emerick, Stuart Halloway",
      :doc "This file defines polymorphic I/O utility functions for Clojure."}
     clojure.java.io
+    (:require clojure.string)
     (:import 
      (java.io Reader InputStream InputStreamReader PushbackReader
               BufferedReader File OutputStream
@@ -47,13 +48,22 @@
   
   File
   (as-file [f] f)
-  (as-url [f] (.toURL f))
+  (as-url [f] (.toURL (.toURI f)))
 
   URL
   (as-url [u] u)
   (as-file [u]
     (if (= "file" (.getProtocol u))
-      (as-file (.getPath u))
+      (as-file
+        (clojure.string/replace
+          (.replace (.getFile u) \/ File/separatorChar)
+          #"%.."
+          (fn [escape]
+            (-> escape
+                (.substring 1 3)
+                (Integer/parseInt 16)
+                (char)
+                (str)))))
       (throw (IllegalArgumentException. (str "Not a file: " u)))))
 
   URI
@@ -229,11 +239,11 @@
     :make-input-stream (fn [^URL x opts]
                          (make-input-stream
                           (if (= "file" (.getProtocol x))
-                            (FileInputStream. (.getPath x))
+                            (FileInputStream. (as-file x))
                             (.openStream x)) opts))
     :make-output-stream (fn [^URL x opts]
                           (if (= "file" (.getProtocol x))
-                            (make-output-stream (File. (.getPath x)) opts)
+                            (make-output-stream (as-file x) opts)
                             (throw (IllegalArgumentException. (str "Can not write to non-file URL <" x ">")))))))
 
 (extend URI
@@ -292,26 +302,28 @@
               (recur)))))))
 
 (defmethod do-copy [InputStream Writer] [#^InputStream input #^Writer output opts]
-  (let [#^"[B" buffer (make-array Byte/TYPE (buffer-size opts))]
+  (let [#^"[C" buffer (make-array Character/TYPE (buffer-size opts))
+        in (InputStreamReader. input (encoding opts))]
     (loop []
-      (let [size (.read input buffer)]
-        (when (pos? size)
-          (let [chars (.toCharArray (String. buffer 0 size (encoding opts)))]
-            (do (.write output chars)
-                (recur))))))))
+      (let [size (.read in buffer 0 (alength buffer))]
+        (if (pos? size)
+          (do (.write output buffer 0 size)
+              (recur)))))))
 
 (defmethod do-copy [InputStream File] [#^InputStream input #^File output opts]
   (with-open [out (FileOutputStream. output)]
     (do-copy input out opts)))
 
 (defmethod do-copy [Reader OutputStream] [#^Reader input #^OutputStream output opts]
-  (let [#^"[C" buffer (make-array Character/TYPE (buffer-size opts))]
+  (let [#^"[C" buffer (make-array Character/TYPE (buffer-size opts))
+        out (OutputStreamWriter. output (encoding opts))]
     (loop []
       (let [size (.read input buffer)]
-        (when (pos? size)
-          (let [bytes (.getBytes (String. buffer 0 size) (encoding opts))]
-            (do (.write output bytes)
-                (recur))))))))
+        (if (pos? size)
+          (do
+            (.write out buffer 0 size)
+            (recur))
+          (.flush out))))))
 
 (defmethod do-copy [Reader Writer] [#^Reader input #^Writer output opts]
   (let [#^"[C" buffer (make-array Character/TYPE (buffer-size opts))]

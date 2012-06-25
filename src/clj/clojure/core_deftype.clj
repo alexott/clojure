@@ -103,7 +103,13 @@
   (seq (let [f \"foo\"] 
        (reify clojure.lang.Seqable 
          (seq [this] (seq f)))))
-  == (\\f \\o \\o))"
+  == (\\f \\o \\o))
+  
+  reify always implements clojure.lang.IObj and transfers meta
+  data of the form to the created object.
+  
+  (meta ^{:k :v} (reify Object (toString [this] \"foo\")))
+  == {:k :v}"
   {:added "1.2"} 
   [& opts+specs]
   (let [[interfaces methods] (parse-opts+specs opts+specs)]
@@ -142,7 +148,8 @@
         hinted-fields fields
         fields (vec (map #(with-meta % nil) fields))
         base-fields fields
-        fields (conj fields '__meta '__extmap)]
+        fields (conj fields '__meta '__extmap)
+        type-hash (hash classname)]
     (when (some #{:volatile-mutable :unsynchronized-mutable} (mapcat (comp keys meta) hinted-fields))
       (throw (IllegalArgumentException. ":volatile-mutable or :unsynchronized-mutable not supported for record fields")))
     (let [gs (gensym)]
@@ -151,8 +158,9 @@
         [(conj i 'clojure.lang.IRecord)
          m])
       (eqhash [[i m]] 
-        [i
-         (conj m 
+        [(conj i 'clojure.lang.IHashEq)
+         (conj m
+               `(hasheq [this#] (bit-xor ~type-hash (.hashCode this#)))
                `(hashCode [this#] (clojure.lang.APersistentMap/mapHash this#))
                `(equals [this# ~gs] (clojure.lang.APersistentMap/mapEquals this# ~gs)))])
       (iobj [[i m]] 
@@ -172,11 +180,11 @@
                            ~@(let [hinted-target (with-meta 'gtarget {:tag tagname})] 
                                (mapcat 
                                 (fn [fld]
-                                  [(keyword fld) 
-                                   `(reify clojure.lang.ILookupThunk 
-                                           (get [~'thunk ~'gtarget] 
-                                                (if (identical? (class ~'gtarget) ~'gclass) 
-                                                  (. ~hinted-target ~(keyword fld))
+                                  [(keyword fld)
+                                   `(reify clojure.lang.ILookupThunk
+                                           (get [~'thunk ~'gtarget]
+                                                (if (identical? (class ~'gtarget) ~'gclass)
+                                                  (. ~hinted-target ~(symbol (str "-" fld)))
                                                   ~'thunk)))])
                                 base-fields))
                            nil))))])
@@ -191,7 +199,7 @@
                          (or (identical? this# ~gs)
                              (when (identical? (class this#) (class ~gs))
                                (let [~gs ~(with-meta gs {:tag tagname})]
-                                 (and  ~@(map (fn [fld] `(= ~fld (. ~gs ~(keyword fld)))) base-fields)
+                                 (and  ~@(map (fn [fld] `(= ~fld (. ~gs ~(symbol (str "-" fld))))) base-fields)
                                        (= ~'__extmap (. ~gs ~'__extmap))))))))
                    `(containsKey [this# k#] (not (identical? this# (.valAt this# k# this#))))
                    `(entryAt [this# k#] (let [v# (.valAt this# k# this#)]
@@ -199,6 +207,7 @@
                                               (clojure.lang.MapEntry. k# v#))))
                    `(seq [this#] (seq (concat [~@(map #(list `new `clojure.lang.MapEntry (keyword %) %) base-fields)] 
                                               ~'__extmap)))
+                   `(iterator [this#] (clojure.lang.SeqIterator. (.seq this#)))
                    `(assoc [this# k# ~gs]
                      (condp identical? k#
                        ~@(mapcat (fn [fld]
@@ -242,8 +251,10 @@
         [field-args over] (split-at 20 fields)
         field-count (count fields)
         arg-count (count field-args)
-        over-count (count over)]
+        over-count (count over)
+        docstring (str "Positional factory function for class " classname ".")]
     `(defn ~fn-name
+       ~docstring
        [~@field-args ~@(if (seq over) '[& overage] [])]
        ~(if (seq over)
           `(if (= (count ~'overage) ~over-count)
@@ -253,6 +264,15 @@
                       (list `nth 'overage i)))
              (throw (clojure.lang.ArityException. (+ ~arg-count (count ~'overage)) (name '~fn-name))))
           `(new ~classname ~@field-args)))))
+
+(defn- validate-fields
+  ""
+  [fields]
+  (when-not (vector? fields)
+    (throw (AssertionError. "No fields vector given.")))
+  (let [specials #{'__meta '__extmap}]
+    (when (some specials fields)
+      (throw (AssertionError. (str "The names in " specials " cannot be used as field names for types or records."))))))
 
 (defmacro defrecord
   "Alpha - subject to change
@@ -314,10 +334,18 @@
   Two constructors will be defined, one taking the designated fields
   followed by a metadata map (nil for none) and an extension field
   map (nil for none), and one taking only the fields (using nil for
-  meta and extension fields)."
-  {:added "1.2"}
+  meta and extension fields). Note that the field names __meta
+  and __extmap are currently reserved and should not be used when
+  defining your own records.
 
-  [name [& fields] & opts+specs]
+  Given (defrecord TypeName ...), two factory functions will be
+  defined: ->TypeName, taking positional parameters for the fields,
+  and map->TypeName, taking a map of keywords to field values."
+  {:added "1.2"
+   :arglists '([name [& fields] & opts+specs])}
+
+  [name fields & opts+specs]
+  (validate-fields fields)
   (let [gname name
         [interfaces methods opts] (parse-opts+specs opts+specs)
         ns-part (namespace-munge *ns*)
@@ -325,10 +353,13 @@
         hinted-fields fields
         fields (vec (map #(with-meta % nil) fields))]
     `(let []
+       (declare ~(symbol (str  '-> gname)))
+       (declare ~(symbol (str 'map-> gname)))
        ~(emit-defrecord name gname (vec hinted-fields) (vec interfaces) methods)
        (import ~classname)
        ~(build-positional-factory gname classname fields)
        (defn ~(symbol (str 'map-> gname))
+         ~(str "Factory function for class " classname ", taking a map of keywords to field values.")
          ([m#] (~(symbol (str classname "/create")) m#)))
        ~classname)))
 
@@ -398,10 +429,17 @@
   given name (a symbol), prepends the current ns as the package, and
   writes the .class file to the *compile-path* directory.
 
-  One constructors will be defined, taking the designated fields."
-  {:added "1.2"}
+  One constructor will be defined, taking the designated fields.  Note
+  that the field names __meta and __extmap are currently reserved and
+  should not be used when defining your own types.
 
-  [name [& fields] & opts+specs]
+  Given (deftype TypeName ...), a factory function called ->TypeName
+  will be defined, taking positional parameters for the fields"
+  {:added "1.2"
+   :arglists '([name [& fields] & opts+specs])}
+
+  [name fields & opts+specs]
+  (validate-fields fields)
   (let [gname name
         [interfaces methods opts] (parse-opts+specs opts+specs)
         ns-part (namespace-munge *ns*)
@@ -711,7 +749,7 @@
                         (cons (apply vector (vary-meta target assoc :tag c) args)
                               body))
                       specs)))]
-    [p (zipmap (map #(-> % first keyword) fs)
+    [p (zipmap (map #(-> % first name keyword) fs)
                (map #(cons 'fn (hint (drop 1 %))) fs))]))
 
 (defn- emit-extend-type [c specs]

@@ -19,3 +19,20 @@
     (testing "a->b->c->d->b"
       (is (thrown-with-msg? Exception #".*Cyclic load dependency.*"
             (require 'clojure.test-clojure.load.cyclic3))))))
+
+(deftest test-load-lib
+  (testing "Shouldn't leak failed namespace"
+    (try (require 'clojure.test-clojure.load.invalid)
+         (catch Exception _))
+    (is (nil? (find-ns 'clojure.test-clojure.load.invalid)))))
+
+(deftest test-require-refer
+  (try
+    (binding [*ns* *ns*]
+      (ns clojure.test-clojure.require-scratch
+        (:require [clojure.set :refer [difference]]
+                  [clojure.walk :refer :all]))
+      (is (fn? (eval 'difference)))
+      (is (every? fn? (map eval '[postwalk-replace prewalk-replace walk]))))
+    (finally
+     (remove-ns 'clojure.test-clojure.require-scratch))))

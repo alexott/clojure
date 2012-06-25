@@ -18,7 +18,7 @@ import java.util.*;
 public abstract class APersistentVector extends AFn implements IPersistentVector, Iterable,
                                                                List,
                                                                RandomAccess, Comparable,
-                                                               Serializable {
+                                                               Serializable, IHashEq {
 int _hash = -1;
 
 public String toString(){
@@ -150,6 +150,17 @@ public int hashCode(){
 		this._hash = hash;
 		}
 	return _hash;
+}
+
+public int hasheq(){
+	int hash = 1;
+	Iterator i = iterator();
+	while(i.hasNext())
+		{
+		Object obj = i.next();
+		hash = 31 * hash + Util.hasheq(obj);
+		}
+	return hash;
 }
 
 public Object get(int index){
@@ -355,19 +366,7 @@ public boolean containsAll(Collection c){
 }
 
 public Object[] toArray(Object[] a){
-	if(a.length >= count())
-		{
-		ISeq s = seq();
-		for(int i = 0; s != null; ++i, s = s.next())
-			{
-			a[i] = s.first();
-			}
-		if(a.length > count())
-			a[count()] = null;
-		return a;
-		}
-	else
-		return toArray();
+    return RT.seqToPassedArray(seq(), a);
 }
 
 public int size(){
@@ -521,8 +520,10 @@ static class SubVector extends APersistentVector implements IObj{
 		this.end = end;
 	}
 
+	public Iterator iterator(){return ((PersistentVector)v).rangedIterator(start,end);}
+
 	public Object nth(int i){
-		if(start + i >= end)
+		if((start + i >= end) || (i < 0))
 			throw new IndexOutOfBoundsException();
 		return v.nth(start + i);
 	}

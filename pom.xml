@@ -5,7 +5,7 @@
   <artifactId>clojure</artifactId>
   <name>clojure</name>
   <packaging>jar</packaging>
-  <version>1.4.0-master-SNAPSHOT</version>
+  <version>1.5.0-master-SNAPSHOT</version>
 
   <url>http://clojure.org/</url>
   <description>Clojure core environment and runtime library.</description>
@@ -37,6 +37,15 @@
     <developerConnection>scm:git:git@github.com:clojure/clojure.git</developerConnection>
     <url>git@github.com:clojure/clojure.git</url>
   </scm>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.codehaus.jsr166-mirror</groupId>
+      <artifactId>jsr166y</artifactId>
+      <version>1.7.0</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
 
   <build>
     <resources>
@@ -72,13 +81,14 @@
 	    </goals>
 	    <configuration>
 	      <target>
+                <property name="maven.compile.classpath" refid="maven.compile.classpath" />
 		<ant target="compile-clojure" />
 	      </target>
 	    </configuration>
 	  </execution>
 	  <execution>
 	    <id>clojure-test</id>
-	    <phase>compile</phase>
+	    <phase>test</phase>
 	    <goals>
 	      <goal>run</goal>
 	    </goals>

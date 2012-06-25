@@ -94,6 +94,7 @@
              *print-meta* *print-meta*
              *print-length* *print-length*
              *print-level* *print-level*
+             *data-readers* *data-readers*
              *compile-path* (System/getProperty "clojure.compile.path" "classes")
              *command-line-args* *command-line-args*
              *unchecked-math* *unchecked-math*
@@ -262,7 +263,7 @@
      (flush)
      (loop []
        (when-not 
-       	 (try (= (read-eval-print) request-exit)
+       	 (try (identical? (read-eval-print) request-exit)
 	  (catch Throwable e
 	   (caught e)
 	   (set! *e e)

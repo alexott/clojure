@@ -279,7 +279,7 @@
 (defrecord RecordToTestHugeFactories [a b c d e f g h i j k l m n o p q r s t u v w x y z])
 
 (deftest test-record-factory-fns
-  (testing "if the definition of a defrecord generates the appropriate factory funcitons"
+  (testing "if the definition of a defrecord generates the appropriate factory functions"
     (let [r    (RecordToTestFactories. 1 2 3)
           r-n  (RecordToTestFactories. nil nil nil)
           huge (RecordToTestHugeFactories. 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26)]
@@ -289,6 +289,10 @@
       (testing "that a record created with the ctor equals one by the map-> factory fn"
         (is (= r    (map->RecordToTestFactories {:a 1 :b 2 :c 3})))
         (is (= r-n  (map->RecordToTestFactories {}))))
+      (testing "that factory functions have docstrings"
+        ;; just test non-nil to avoid overspecifiying what's in the docstring
+        (is (false? (-> ->RecordToTestFactories var meta :doc nil?)))
+        (is (false? (->  map->RecordToTestFactories var meta :doc nil?))))
       (testing "that a literal record equals one by the positional factory fn"
         (is (= #clojure.test_clojure.protocols.RecordToTestFactories{:a 1 :b 2 :c 3} (->RecordToTestFactories 1 2 3)))
         (is (= #clojure.test_clojure.protocols.RecordToTestFactories{:a 1 :b nil :c nil} (->RecordToTestFactories 1 nil nil)))
@@ -432,6 +436,20 @@
       (is (= "#clojure.test_clojure.protocols.RecordToTestPrinting{:a 1, :b 2}"
              (binding [*print-dup* true *verbose-defrecords* true] (pr-str r)))))))
 
+(defrecord RecordToTest__ [__a ___b])
+(defrecord TypeToTest__   [__a ___b])
+
+(deftest test-record-and-type-field-names
+  (testing "that types and records allow names starting with double-underscore.
+            This is a regression test for CLJ-837."
+    (let [r (RecordToTest__. 1 2)
+          t (TypeToTest__. 3 4)]
+      (are [x y] (= x y)
+           1 (:__a r)
+           2 (:___b r)
+           3 (.__a t)
+           4 (.___b t)))))
+
 (defrecord RecordToTestLongHint [^long a])
 (defrecord RecordToTestByteHint [^byte a])
 (defrecord RecordToTestBoolHint [^boolean a])
@@ -543,4 +561,27 @@
                (hinted [_ ^String s] (str s s)))]
         (is (= 2 (.hinted r 1)))
         (is (= "xoxo" (.hinted r "xo")))))))
+
+
+; see CLJ-845
+(defprotocol SyntaxQuoteTestProtocol
+  (sqtp [p]))
+
+(defmacro try-extend-type [c]
+  `(extend-type ~c
+     SyntaxQuoteTestProtocol
+     (sqtp [p#] p#)))
+
+(defmacro try-extend-protocol [c]
+  `(extend-protocol SyntaxQuoteTestProtocol
+     ~c
+     (sqtp [p#] p#)))
+
+(try-extend-type String)
+(try-extend-protocol clojure.lang.Keyword)
+
+(deftest test-no-ns-capture
+  (is (= "foo" (sqtp "foo")))
+  (is (= :foo (sqtp :foo))))
+
 

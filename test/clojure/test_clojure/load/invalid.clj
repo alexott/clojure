@@ -6,24 +6,6 @@
 ;   the terms of this license.
 ;   You must not remove this notice, or any other, from this software.
 
-; Author: Frantisek Sodomka
+(ns clojure.test-clojure.load.invalid)
 
-;;
-;;  Test special forms, macros and metadata
-;;
-
-(ns clojure.test-clojure.special
-  (:use clojure.test))
-
-; http://clojure.org/special_forms
-
-; let, letfn
-; quote
-; var
-; fn
-
-(deftest multiple-keys-in-destructuring
-  (let [foo (fn [& {:keys [x]}] x)
-        bar (fn [& options] (apply foo :x :b options))]
-    (is (= (bar) :b))
-    (is (= (bar :x :a) :a))))
+(this isn't valid code)

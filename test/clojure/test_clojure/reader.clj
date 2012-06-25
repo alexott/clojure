@@ -18,7 +18,12 @@
 
 (ns clojure.test-clojure.reader
   (:use clojure.test)
-  (:import clojure.lang.BigInt))
+  (:use [clojure.instant :only [read-instant-date
+                                read-instant-calendar
+                                read-instant-timestamp]])
+  (:import clojure.lang.BigInt
+           java.io.File
+           java.util.TimeZone))
 
 ;; Symbols
 
@@ -43,11 +48,72 @@
 
 ;; Strings
 
+(defn temp-file
+  [prefix suffix]
+  (doto (File/createTempFile prefix suffix)
+    (.deleteOnExit)))
+
+(defn read-from
+  [source file form]
+  (if (= :string source)
+    (read-string form)
+    (do
+      (spit file form)
+      (load-file (str file)))))
+
+(defn code-units
+  [s]
+  (and (instance? String s) (map int s)))
+
 (deftest Strings
   (is (= "abcde" (str \a \b \c \d \e)))
   (is (= "abc
   def" (str \a \b \c \newline \space \space \d \e \f)))
-  )
+  (let [f (temp-file "clojure.core-reader" "test")]
+    (doseq [source [:string :file]]
+      (testing (str "Valid string literals read from " (name source))
+        (are [x form] (= x (code-units
+                            (read-from source f (str "\"" form "\""))))
+             [] ""
+             [34] "\\\""
+             [10] "\\n"
+
+             [0] "\\0"
+             [0] "\\000"
+             [3] "\\3"
+             [3] "\\03"
+             [3] "\\003"
+             [0 51] "\\0003"
+             [3 48] "\\0030"
+             [0377] "\\377"
+             [0 56] "\\0008"
+
+             [0] "\\u0000"
+             [0xd7ff] "\\ud7ff"
+             [0xd800] "\\ud800"
+             [0xdfff] "\\udfff"
+             [0xe000] "\\ue000"
+             [0xffff] "\\uffff"
+             [4 49] "\\u00041"))
+      (testing (str "Errors reading string literals from " (name source))
+        (are [err msg form] (thrown-with-msg? err msg
+                              (read-from source f (str "\"" form "\"")))
+             Exception #"EOF while reading string" "\\"
+             Exception #"Unsupported escape character: \\o" "\\o"
+
+             Exception #"Octal escape sequence must be in range \[0, 377\]" "\\400"
+             Exception #"Invalid digit: 8" "\\8"
+             Exception #"Invalid digit: 8" "\\8000"
+             Exception #"Invalid digit: 8" "\\0800"
+             Exception #"Invalid digit: 8" "\\0080"
+             Exception #"Invalid digit: a" "\\2and"
+
+             Exception #"Invalid unicode escape: \\u" "\\u"
+             Exception #"Invalid unicode escape: \\ug" "\\ug"
+             Exception #"Invalid unicode escape: \\ug" "\\ug000"
+             Exception #"Invalid character length: 1, should be: 4" "\\u0"
+             Exception #"Invalid character length: 3, should be: 4" "\\u004"
+             Exception #"Invalid digit: g" "\\u004g")))))
 
 ;; Numbers
 
@@ -211,7 +277,43 @@
 
 ;; Characters
 
-(deftest t-Characters)
+(deftest t-Characters
+  (let [f (temp-file "clojure.core-reader" "test")]
+    (doseq [source [:string :file]]
+      (testing (str "Valid char literals read from " (name source))
+        (are [x form] (= x (read-from source f form))
+             (first "o") "\\o"
+             (char 0) "\\o0"
+             (char 0) "\\o000"
+             (char 047) "\\o47"
+             (char 0377) "\\o377"
+
+             (first "u") "\\u"
+             (first "A") "\\u0041"
+             (char 0) "\\u0000"
+             (char 0xd7ff) "\\ud7ff"
+             (char 0xe000) "\\ue000"
+             (char 0xffff) "\\uffff"))
+      (testing (str "Errors reading char literals from " (name source))
+        (are [err msg form] (thrown-with-msg? err msg (read-from source f form))
+             Exception #"EOF while reading character" "\\"
+             Exception #"Unsupported character: \\00" "\\00"
+             Exception #"Unsupported character: \\0009" "\\0009"
+
+             Exception #"Invalid digit: 8" "\\o378"
+             Exception #"Octal escape sequence must be in range \[0, 377\]" "\\o400"
+             Exception #"Invalid digit: 8" "\\o800"
+             Exception #"Invalid digit: a" "\\oand"
+             Exception #"Invalid octal escape sequence length: 4" "\\o0470"
+
+             Exception #"Invalid unicode character: \\u0" "\\u0"
+             Exception #"Invalid unicode character: \\ug" "\\ug"
+             Exception #"Invalid unicode character: \\u000" "\\u000"
+             Exception #"Invalid character constant: \\ud800" "\\ud800"
+             Exception #"Invalid character constant: \\udfff" "\\udfff"
+             Exception #"Invalid unicode character: \\u004" "\\u004"
+             Exception #"Invalid unicode character: \\u00041" "\\u00041"
+             Exception #"Invalid digit: g" "\\u004g")))))
 
 ;; nil
 
@@ -315,3 +417,87 @@
 ;; (read stream eof-is-error eof-value is-recursive)
 
 (deftest t-read)
+
+(deftest Instants
+  (testing "Instants are read as java.util.Date by default"
+    (is (= java.util.Date (class #inst "2010-11-12T13:14:15.666"))))
+  (let [s "#inst \"2010-11-12T13:14:15.666-06:00\""]
+    (binding [*data-readers* {'inst read-instant-date}]
+      (testing "read-instant-date produces java.util.Date"
+        (is (= java.util.Date (class (read-string s)))))
+      (testing "java.util.Date instants round-trips"
+        (is (= (-> s read-string)
+               (-> s read-string pr-str read-string))))
+      (testing "java.util.Date instants round-trip throughout the year"
+        (doseq [month (range 1 13) day (range 1 29) hour (range 1 23)]
+          (let [s (format "#inst \"2010-%02d-%02dT%02d:14:15.666-06:00\"" month day hour)]
+            (is (= (-> s read-string)
+                   (-> s read-string pr-str read-string))))))
+      (testing "java.util.Date handling DST in time zones"
+        (let [dtz (TimeZone/getDefault)]
+          (try
+            ;; A timezone with DST in effect during 2010-11-12
+            (TimeZone/setDefault (TimeZone/getTimeZone "Australia/Sydney"))
+            (is (= (-> s read-string)
+                   (-> s read-string pr-str read-string)))
+            (finally (TimeZone/setDefault dtz)))))
+      (testing "java.util.Date should always print in UTC"
+        (let [d (read-string s)
+              pstr (print-str d)
+              len (.length pstr)]
+          (is (= (subs pstr (- len 7)) "-00:00\"")))))
+    (binding [*data-readers* {'inst read-instant-calendar}]
+      (testing "read-instant-calendar produces java.util.Calendar"
+        (is (instance? java.util.Calendar (read-string s))))
+      (testing "java.util.Calendar round-trips"
+        (is (= (-> s read-string)
+               (-> s read-string pr-str read-string))))
+      (testing "java.util.Calendar remembers timezone in literal"
+        (is (= "#inst \"2010-11-12T13:14:15.666-06:00\""
+               (-> s read-string pr-str)))
+        (is (= (-> s read-string)
+               (-> s read-string pr-str read-string))))
+      (testing "java.util.Calendar preserves milliseconds"
+        (is (= 666 (-> s read-string
+                       (.get java.util.Calendar/MILLISECOND)))))))
+  (let [s "#inst \"2010-11-12T13:14:15.123456789\""
+        s2 "#inst \"2010-11-12T13:14:15.123\""
+        s3 "#inst \"2010-11-12T13:14:15.123456789123\""]
+    (binding [*data-readers* {'inst read-instant-timestamp}]
+      (testing "read-instant-timestamp produces java.sql.Timestamp"
+        (is (= java.sql.Timestamp (class (read-string s)))))
+      (testing "java.sql.Timestamp preserves nanoseconds"
+        (is (= 123456789 (-> s read-string .getNanos)))
+        (is (= 123456789 (-> s read-string pr-str read-string .getNanos)))
+        ;; truncate at nanos for s3
+        (is (= 123456789 (-> s3 read-string pr-str read-string .getNanos))))
+      (testing "java.sql.Timestamp should compare nanos"
+        (is (= (read-string s) (read-string s3)))
+        (is (not= (read-string s) (read-string s2)))))
+    (binding [*data-readers* {'inst read-instant-date}]
+      (testing "read-instant-date should truncate at milliseconds"
+        (is (= (read-string s) (read-string s2)) (read-string s3)))))
+  (let [s "#inst \"2010-11-12T03:14:15.123+05:00\""
+        s2 "#inst \"2010-11-11T22:14:15.123Z\""]
+    (binding [*data-readers* {'inst read-instant-date}]
+      (testing "read-instant-date should convert to UTC"
+        (is (= (read-string s) (read-string s2)))))
+    (binding [*data-readers* {'inst read-instant-timestamp}]
+      (testing "read-instant-timestamp should convert to UTC"
+        (is (= (read-string s) (read-string s2)))))
+    (binding [*data-readers* {'inst read-instant-calendar}]
+      (testing "read-instant-calendar should preserve timezone"
+        (is (not= (read-string s) (read-string s2)))))))
+      
+;; UUID Literals
+;; #uuid "550e8400-e29b-41d4-a716-446655440000"
+
+(deftest UUID
+  (is (= java.util.UUID (class #uuid "550e8400-e29b-41d4-a716-446655440000")))
+  (is (.equals #uuid "550e8400-e29b-41d4-a716-446655440000"
+               #uuid "550e8400-e29b-41d4-a716-446655440000"))
+  (is (not (identical? #uuid "550e8400-e29b-41d4-a716-446655440000"
+                       #uuid "550e8400-e29b-41d4-a716-446655440000")))
+  (is (= 4 (.version #uuid "550e8400-e29b-41d4-a716-446655440000")))
+  (is (= (print-str #uuid "550e8400-e29b-41d4-a716-446655440000")
+         "#uuid \"550e8400-e29b-41d4-a716-446655440000\"")))

@@ -5,3 +5,5 @@ clojure.ipr
 nbproject/private/
 /classes/
 /test-classes/
+maven-classpath
+maven-classpath.properties
